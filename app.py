@@ -18,8 +18,8 @@ if st.button("Carica Lista"):
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Atleta', 'Pod_Info', 'Orario', 'Pedana_Num']
             
-            # Estraiamo magicamente la Lettera del Pod (es. prende "M" da "M1")
-            df['Pod'] = df['Pod_Info'].astype(str).str.str.upper()
+            # MODIFICA QUI: Metodo infallibile per estrarre la lettera del Pod
+            df['Pod'] = [str(x).upper() if pd.notna(x) and str(x) else "" for x in df['Pod_Info']]
             
             # Ordiniamo per Orario, poi per Lettera del Pod, poi per Numero Pedana
             df['Orario_Sort'] = pd.to_datetime(df['Orario'], format='%I:%M %p', errors='coerce')
@@ -29,7 +29,7 @@ if st.button("Carica Lista"):
             df['Side_Coach'] = "Nessuno"
             
             # Prepariamo un'etichetta furba per farti selezionare velocemente da iPhone
-            df['Display'] = "Pod " + df['Pod'] + " (" + df['Pod_Info'] + ") | " + df['Atleta']
+            df['Display'] = "Pod " + df['Pod'] + " (" + df['Pod_Info'].astype(str) + ") | " + df['Atleta'].astype(str)
             
             st.session_state['df'] = df
         except Exception as e:
@@ -40,7 +40,6 @@ if 'df' in st.session_state:
     
     # 1. MAPPA GARA (Raggruppata per Pod)
     st.subheader("📍 Mappa Gara")
-    # Mostriamo solo le info cruciali per non intasare lo schermo dell'iPhone
     display_df = df[['Orario', 'Pod', 'Pod_Info', 'Atleta', 'Coach', 'Side_Coach']]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     
