@@ -28,7 +28,6 @@ if st.button("Load List"):
             df['Display'] = "Strip " + df['Strip'].astype(str) + " | " + df['Athlete'].astype(str)
             
             st.session_state['df'] = df
-            # Contatore per forzare il reset delle spunte
             st.session_state['reset_counter'] = 0
         except Exception as e:
             st.error(f"Formatting error: {e}")
@@ -46,30 +45,43 @@ if 'df' in st.session_state:
     # --- 2. ASSIGNMENT SECTION (Top to Bottom flow) ---
     st.subheader("✍️ Assignment")
     
-    # A. Scegli i Coach
     main_coach = st.radio("1. Select Main Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
     side_coach = st.radio("2. Select Side Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
     
     st.write("---")
-    
-    # B. Seleziona gli Atleti
     st.write("**3. Select Athletes:**")
     
-    athletes_to_show = df['Display'].tolist()
+    # LOGICA DI ORDINAMENTO UI: Separiamo chi è assegnato da chi non lo è
+    ui_df = df.copy()
+    # E' considerato assegnato se ha un Main o un Side coach
+    ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
+    # Ordiniamo prima per Is_Assigned (False sopra, True sotto) e poi per Orario/Pod
+    ui_df = ui_df.sort_values(by=['Is_Assigned', 'Time_Sort', 'Pod', 'Strip'])
+    
     reset_key = st.session_state.get('reset_counter', 0)
     selected_list = []
     
-    # Box con scroll per non allungare troppo la pagina
-    with st.container(height=300):
-        for athlete in athletes_to_show:
-            # Il reset_key cambia ad ogni conferma, azzerando le caselle
-            chk_key = f"chk_{athlete}_{reset_key}"
-            if st.checkbox(athlete, key=chk_key):
-                selected_list.append(athlete)
+    with st.container(height=350):
+        for _, row in ui_df.iterrows():
+            athlete_display = row['Display']
+            
+            # Formattiamo l'etichetta visiva per l'iPhone
+            if row['Is_Assigned']:
+                main_init = row['Coach'][:3].upper() if row['Coach'] != "None" else "-"
+                side_init = row['Side_Coach'][:3].upper() if row['Side_Coach'] != "None" else "-"
+                # L'etichetta mostra la spunta e le iniziali
+                ui_label = f"✅ {athlete_display} [M: {main_init} | S: {side_init}]"
+            else:
+                # Se non è assegnato, l'etichetta è pulita
+                ui_label = athlete_display
+                
+            chk_key = f"chk_{athlete_display}_{reset_key}"
+            # Il valore restituito al dataframe è sempre l'originale "athlete_display"
+            if st.checkbox(ui_label, key=chk_key):
+                selected_list.append(athlete_display)
                 
     st.caption(f"Selected: {len(selected_list)} athletes")
     
-    # C. Conferma
     if st.button("✅ 4. Confirm Assignment"):
         if not selected_list:
             st.warning("Please select at least one athlete first!")
@@ -81,7 +93,6 @@ if 'df' in st.session_state:
                 df.loc[df['Display'].isin(selected_list), 'Side_Coach'] = side_coach
                 
             st.session_state['df'] = df
-            # Incrementiamo il contatore: al prossimo ricaricamento le caselle saranno vuote!
             st.session_state['reset_counter'] += 1
             st.rerun()
             
