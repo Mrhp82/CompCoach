@@ -17,7 +17,6 @@ if st.button("Load List"):
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            # Pulizia stringhe
             df['Athlete'] = df['Athlete'].astype(str).str.strip()
             df['Strip'] = df['Strip'].astype(str).str.strip()
             df['Time'] = df['Time'].astype(str).str.strip()
@@ -101,36 +100,62 @@ if 'df' in st.session_state:
     if st.button("📝 Generate WhatsApp Text"):
         output = ""
         
-        export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
+        # Filtriamo solo gli atleti che hanno un coach assegnato
+        export_df = df[(df['Coach'] != "None") | (df['Side_Coach'] != "None")].copy()
         
-        coach_order = []
-        for _, row in export_df.iterrows():
-            c = str(row['Coach'])
-            sc = str(row['Side_Coach'])
-            if c in COACH_LIST and c not in coach_order:
-                coach_order.append(c)
-            if sc in COACH_LIST and sc not in coach_order:
-                coach_order.append(sc)
-                
-        # Layout ottimizzato per la chat di WhatsApp (Niente tabelle, formato ad elenco)
-        for coach in coach_order:
-            is_main = export_df['Coach'] == coach
-            is_side = export_df['Side_Coach'] == coach
-            subset = export_df[is_main | is_side]
-            
-            # Gli asterischi creano il grassetto automatico su WhatsApp
-            output += f"\n🤺 *{coach.upper()}*\n"
-            
-            for _, row in subset.iterrows():
-                t = str(row['Time'])
-                s = str(row['Strip'])
-                a = str(row['Athlete'])
-                
-                if str(row['Coach']) == coach:
-                    side_str = f" [Side: {row['Side_Coach']}]" if str(row['Side_Coach']) != "None" else ""
-                    output += f"🔹 {t} - Strip {s}: {a}{side_str}\n"
-                elif str(row['Side_Coach']) == coach:
-                    main_str = f" [Main: {row['Coach']}]" if str(row['Coach']) != "None" else ""
-                    output += f"🔸 {t} - Strip {s}: {a} [YOU ARE SIDE]{main_str}\n"
+        if export_df.empty:
+            st.warning("No athletes assigned yet!")
+        else:
+            # Estraiamo gli orari unici presenti nella lista, mantenendo l'ordine cronologico
+            unique_times = []
+            for _, row in export_df.iterrows():
+                t_str = str(row['Time'])
+                t_sort = row['Time_Sort']
+                if not any(t['str'] == t_str for t in unique_times):
+                    unique_times.append({'str': t_str, 'sort': t_sort})
                     
-        st.code(output.strip())
+            unique_times.sort(key=lambda x: x['sort'] if pd.notna(x['sort']) else pd.Timestamp.max)
+            
+            # Cicliamo su ogni singolo orario
+            for time_data in unique_times:
+                current_time = time_data['str']
+                output += f"🕒 *{current_time}*\n"
+                
+                # Prendiamo solo gli atleti che gareggiano a quest'ora
+                time_subset = export_df[export_df['Time'] == current_time]
+                
+                # Troviamo quali coach sono impegnati a quest'ora e li ordiniamo geograficamente
+                active_coaches = []
+                for coach in COACH_LIST:
+                    if coach in time_subset['Coach'].values or coach in time_subset['Side_Coach'].values:
+                        coach_records = time_subset[(time_subset['Coach'] == coach) | (time_subset['Side_Coach'] == coach)]
+                        first_pod = str(coach_records.iloc['Pod'])
+                        first_strip = str(coach_records.iloc['Strip'])
+                        active_coaches.append({'name': coach, 'pod': first_pod, 'strip': first_strip})
+                
+                active_coaches.sort(key=lambda x: (x['pod'], x['strip']))
+                
+                # Per ogni coach impegnato a quest'ora, stampiamo i suoi atleti
+                for c_data in active_coaches:
+                    coach_name = c_data['name']
+                    output += f"\n🤺 *{coach_name.upper()}*\n"
+                    
+                    coach_athletes = time_subset[(time_subset['Coach'] == coach_name) | (time_subset['Side_Coach'] == coach_name)]
+                    # Ordiniamo gli atleti del coach geograficamente
+                    coach_athletes = coach_athletes.sort_values(by=['Pod', 'Strip'])
+                    
+                    for _, row in coach_athletes.iterrows():
+                        s = str(row['Strip'])
+                        a = str(row['Athlete'])
+                        
+                        if str(row['Coach']) == coach_name:
+                            side_str = f" [Side: {row['Side_Coach']}]" if str(row['Side_Coach']) != "None" else ""
+                            output += f"🔹 {s}: {a}{side_str}\n"
+                        elif str(row['Side_Coach']) == coach_name:
+                            main_str = f" [Main: {row['Coach']}]" if str(row['Coach']) != "None" else ""
+                            output += f"🔸 {s}: {a} [YOU ARE SIDE]{main_str}\n"
+                
+                # Aggiungiamo uno spazio separatore prima del prossimo orario
+                output += "\n" + "—"*15 + "\n\n"
+                
+            st.code(output.strip())
