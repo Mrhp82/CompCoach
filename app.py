@@ -28,8 +28,8 @@ if st.button("Load List"):
             df['Display'] = "Strip " + df['Strip'].astype(str) + " | " + df['Athlete'].astype(str)
             
             st.session_state['df'] = df
-            # Initialize empty set for pure-touch selections
-            st.session_state['selected_athletes'] = set()
+            # Contatore per forzare il reset delle spunte
+            st.session_state['reset_counter'] = 0
         except Exception as e:
             st.error(f"Formatting error: {e}")
 
@@ -43,47 +43,37 @@ if 'df' in st.session_state:
     
     st.divider()
     
-    # --- 2. SELECT ATHLETES (PURE TOUCH, NO KEYBOARD) ---
-    st.subheader("👆 1. Select Athletes")
+    # --- 2. ASSIGNMENT SECTION (Top to Bottom flow) ---
+    st.subheader("✍️ Assignment")
     
-    # Pod Filter buttons
-    available_pods = ["All"] + sorted(df['Pod'].unique().tolist())
-    pod_filter = st.radio("Filter by Pod:", available_pods, horizontal=True)
+    # A. Scegli i Coach
+    main_coach = st.radio("1. Select Main Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
+    side_coach = st.radio("2. Select Side Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
     
-    if pod_filter == "All":
-        athletes_to_show = df['Display'].tolist()
-    else:
-        athletes_to_show = df[df['Pod'] == pod_filter]['Display'].tolist()
-        
-    st.caption("Tap to select/deselect (keyboard won't open):")
+    st.write("---")
     
-    # Scrollable container for checkboxes
-    with st.container(height=250):
+    # B. Seleziona gli Atleti
+    st.write("**3. Select Athletes:**")
+    
+    athletes_to_show = df['Display'].tolist()
+    reset_key = st.session_state.get('reset_counter', 0)
+    selected_list = []
+    
+    # Box con scroll per non allungare troppo la pagina
+    with st.container(height=300):
         for athlete in athletes_to_show:
-            is_checked = athlete in st.session_state['selected_athletes']
-            
-            # If user taps the checkbox, update the set in session_state
-            if st.checkbox(athlete, value=is_checked, key=f"chk_{athlete}"):
-                st.session_state['selected_athletes'].add(athlete)
-            else:
-                st.session_state['selected_athletes'].discard(athlete)
+            # Il reset_key cambia ad ogni conferma, azzerando le caselle
+            chk_key = f"chk_{athlete}_{reset_key}"
+            if st.checkbox(athlete, key=chk_key):
+                selected_list.append(athlete)
                 
-    st.write(f"**Selected:** {len(st.session_state['selected_athletes'])} athletes")
+    st.caption(f"Selected: {len(selected_list)} athletes")
     
-    st.divider()
-
-    # --- 3. ASSIGN COACHES ---
-    st.subheader("✍️ 2. Assign Coaches")
-    
-    main_coach = st.radio("Main Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
-    side_coach = st.radio("Side Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
-    
-    if st.button("✅ Confirm Assignment"):
-        if not st.session_state['selected_athletes']:
+    # C. Conferma
+    if st.button("✅ 4. Confirm Assignment"):
+        if not selected_list:
             st.warning("Please select at least one athlete first!")
         else:
-            selected_list = list(st.session_state['selected_athletes'])
-            
             if main_coach != "No Change":
                 df.loc[df['Display'].isin(selected_list), 'Coach'] = main_coach
             
@@ -91,13 +81,13 @@ if 'df' in st.session_state:
                 df.loc[df['Display'].isin(selected_list), 'Side_Coach'] = side_coach
                 
             st.session_state['df'] = df
-            # Clear selection after successful assignment
-            st.session_state['selected_athletes'] = set()
+            # Incrementiamo il contatore: al prossimo ricaricamento le caselle saranno vuote!
+            st.session_state['reset_counter'] += 1
             st.rerun()
             
     st.divider()
     
-    # --- 4. WHATSAPP OUTPUT ---
+    # --- 3. WHATSAPP OUTPUT ---
     if st.button("Generate WhatsApp Text"):
         output = ""
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
