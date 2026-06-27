@@ -106,9 +106,10 @@ if 'df' in st.session_state:
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                first_time = subset.iloc['Time_Sort']
-                first_pod = subset.iloc['Pod']
-                first_strip = subset.iloc['Strip']
+                # Modifica della sintassi per evitare il TypeError
+                first_time = subset['Time_Sort'].values
+                first_pod = subset['Pod'].values
+                first_strip = subset['Strip'].values
                 coach_order_list.append((coach, first_time, first_pod, first_strip))
         
         coach_order_list.sort(key=lambda x: (x, x, x))
@@ -128,16 +129,13 @@ if 'df' in st.session_state:
                     main_str = f" (Main: {row['Coach']})" if row['Coach'] != "None" else ""
                     output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
         
-        # Generazione Grafica (Matplotlib)
         with st.spinner("Generating high quality image..."):
             lines = output.strip().split('\n')
-            # Calcola l'altezza in base al numero di righe per evitare che il testo si tagli
             fig_height = max(4.0, len(lines) * 0.28) 
             
-            fig, ax = plt.subplots(figsize=(9, fig_height), facecolor='#0E1117') # Sfondo Dark Streamlit
+            fig, ax = plt.subplots(figsize=(9, fig_height), facecolor='#0E1117')
             ax.axis('off')
             
-            # Scrittura del testo sull'immagine con font monospace
             ax.text(0.01, 0.99, output.strip(), 
                     fontsize=13, 
                     color='#FAFAFA', 
@@ -145,7 +143,6 @@ if 'df' in st.session_state:
                     verticalalignment='top', 
                     transform=ax.transAxes)
             
-            # Salvataggio in memoria
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches='tight', dpi=200, facecolor='#0E1117')
             buf.seek(0)
@@ -153,9 +150,7 @@ if 'df' in st.session_state:
             st.success("Image generated! 👇 Long-press on the image below and tap 'Share' to send via WhatsApp.")
             st.image(buf)
             
-            # Aggiungo anche un tasto di download per sicurezza
             st.download_button("💾 Save Image to Device", buf, file_name="AFM_Schedule.png", mime="image/png")
             
-            # Mostriamo anche il testo originale nascosto in caso serva copiare un nome al volo
             with st.expander("Show Text Version"):
                 st.code(output.strip())
