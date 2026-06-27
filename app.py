@@ -54,7 +54,6 @@ if 'df' in st.session_state:
     st.write("**3. Select Athletes:**")
     
     ui_df = df.copy()
-    # Forzatura del formato stringa per evitare errori PyArrow
     ui_df['Coach'] = ui_df['Coach'].astype(str)
     ui_df['Side_Coach'] = ui_df['Side_Coach'].astype(str)
     ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
@@ -68,8 +67,8 @@ if 'df' in st.session_state:
             athlete_display = row['Display']
             
             if row['Is_Assigned']:
-                main_init = row['Coach'][:3].upper() if row['Coach'] != "None" else "-"
-                side_init = row['Side_Coach'][:3].upper() if row['Side_Coach'] != "None" else "-"
+                main_init = str(row['Coach'])[:3].upper() if str(row['Coach']) != "None" else "-"
+                side_init = str(row['Side_Coach'])[:3].upper() if str(row['Side_Coach']) != "None" else "-"
                 ui_label = f"✅ {athlete_display} [M: {main_init} | S: {side_init}]"
             else:
                 ui_label = athlete_display
@@ -102,37 +101,50 @@ if 'df' in st.session_state:
         output = ""
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
         
-        # Forzatura del formato stringa prima del confronto per aggirare il TypeError
+        # Forzatura totale in stringa
         export_df['Coach'] = export_df['Coach'].astype(str)
         export_df['Side_Coach'] = export_df['Side_Coach'].astype(str)
         
         coach_order_list = []
         for coach in COACH_LIST:
-            is_main = export_df['Coach'] == str(coach)
-            is_side = export_df['Side_Coach'] == str(coach)
+            coach_str = str(coach)
+            is_main = export_df['Coach'] == coach_str
+            is_side = export_df['Side_Coach'] == coach_str
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                first_time = subset['Time_Sort'].values
-                first_pod = subset['Pod'].values
-                first_strip = subset['Strip'].values
-                coach_order_list.append((coach, first_time, first_pod, first_strip))
+                # Estrazione sicura
+                first_time_raw = str(subset.iloc['Time'])
+                first_pod = str(subset.iloc['Pod'])
+                first_strip = str(subset.iloc['Strip'])
+                
+                # Conversione tempo protetta
+                try:
+                    time_val = pd.to_datetime(first_time_raw, format='%I:%M %p')
+                except:
+                    time_val = first_time_raw
+                    
+                coach_order_list.append((coach_str, time_val, first_pod, first_strip))
         
-        coach_order_list.sort(key=lambda x: (x, x, x))
+        # Ordinamento protetto contro errori di tipo
+        try:
+            coach_order_list.sort(key=lambda x: (x, x, x))
+        except TypeError:
+            coach_order_list.sort(key=lambda x: (str(x), str(x), str(x)))
         
         for coach_data in coach_order_list:
-            coach = coach_data
-            is_main = export_df['Coach'] == str(coach)
-            is_side = export_df['Side_Coach'] == str(coach)
+            coach = str(coach_data) # Qui il .upper() non potrà MAI fallire
+            is_main = export_df['Coach'] == coach
+            is_side = export_df['Side_Coach'] == coach
             subset = export_df[is_main | is_side]
             
             output += f"\n--- {coach.upper()} ---\n"
             for _, row in subset.iterrows():
-                if row['Coach'] == coach:
-                    side_str = f" (Side: {row['Side_Coach']})" if row['Side_Coach'] != "None" else ""
+                if str(row['Coach']) == coach:
+                    side_str = f" (Side: {row['Side_Coach']})" if str(row['Side_Coach']) != "None" else ""
                     output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']}{side_str}\n"
-                elif row['Side_Coach'] == coach:
-                    main_str = f" (Main: {row['Coach']})" if row['Coach'] != "None" else ""
+                elif str(row['Side_Coach']) == coach:
+                    main_str = f" (Main: {row['Coach']})" if str(row['Coach']) != "None" else ""
                     output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
         
         with st.spinner("Generating high quality image..."):
