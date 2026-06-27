@@ -101,7 +101,6 @@ if 'df' in st.session_state:
         output = ""
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
         
-        # Forzatura totale in stringa
         export_df['Coach'] = export_df['Coach'].astype(str)
         export_df['Side_Coach'] = export_df['Side_Coach'].astype(str)
         
@@ -113,12 +112,11 @@ if 'df' in st.session_state:
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                # Estrazione sicura
-                first_time_raw = str(subset.iloc['Time'])
-                first_pod = str(subset.iloc['Pod'])
-                first_strip = str(subset.iloc['Strip'])
+                # Utilizziamo .values al posto di .iloc per massima sicurezza
+                first_time_raw = str(subset['Time'].values)
+                first_pod = str(subset['Pod'].values)
+                first_strip = str(subset['Strip'].values)
                 
-                # Conversione tempo protetta
                 try:
                     time_val = pd.to_datetime(first_time_raw, format='%I:%M %p')
                 except:
@@ -126,14 +124,13 @@ if 'df' in st.session_state:
                     
                 coach_order_list.append((coach_str, time_val, first_pod, first_strip))
         
-        # Ordinamento protetto contro errori di tipo
         try:
             coach_order_list.sort(key=lambda x: (x, x, x))
         except TypeError:
             coach_order_list.sort(key=lambda x: (str(x), str(x), str(x)))
         
         for coach_data in coach_order_list:
-            coach = str(coach_data) # Qui il .upper() non potrà MAI fallire
+            coach = str(coach_data) 
             is_main = export_df['Coach'] == coach
             is_side = export_df['Side_Coach'] == coach
             subset = export_df[is_main | is_side]
