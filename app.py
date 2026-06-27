@@ -17,7 +17,7 @@ if st.button("Load List"):
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            df['Pod'] = [str(x).upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
+            df['Pod'] = [str(x)[0].upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
             
             df['Time_Sort'] = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
             df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
@@ -53,9 +53,7 @@ if 'df' in st.session_state:
     
     # LOGICA DI ORDINAMENTO UI: Separiamo chi è assegnato da chi non lo è
     ui_df = df.copy()
-    # E' considerato assegnato se ha un Main o un Side coach
     ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
-    # Ordiniamo prima per Is_Assigned (False sopra, True sotto) e poi per Orario/Pod
     ui_df = ui_df.sort_values(by=['Is_Assigned', 'Time_Sort', 'Pod', 'Strip'])
     
     reset_key = st.session_state.get('reset_counter', 0)
@@ -65,18 +63,14 @@ if 'df' in st.session_state:
         for _, row in ui_df.iterrows():
             athlete_display = row['Display']
             
-            # Formattiamo l'etichetta visiva per l'iPhone
             if row['Is_Assigned']:
                 main_init = row['Coach'][:3].upper() if row['Coach'] != "None" else "-"
                 side_init = row['Side_Coach'][:3].upper() if row['Side_Coach'] != "None" else "-"
-                # L'etichetta mostra la spunta e le iniziali
                 ui_label = f"✅ {athlete_display} [M: {main_init} | S: {side_init}]"
             else:
-                # Se non è assegnato, l'etichetta è pulita
                 ui_label = athlete_display
                 
             chk_key = f"chk_{athlete_display}_{reset_key}"
-            # Il valore restituito al dataframe è sempre l'originale "athlete_display"
             if st.checkbox(ui_label, key=chk_key):
                 selected_list.append(athlete_display)
                 
@@ -103,18 +97,37 @@ if 'df' in st.session_state:
         output = ""
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
         
+        # Step 1: Analizza chi allena cosa per ordinare i blocchi dei Coach
+        coach_order_list = []
         for coach in COACH_LIST:
             is_main = export_df['Coach'] == coach
             is_side = export_df['Side_Coach'] == coach
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                output += f"\n--- {coach.upper()} ---\n"
-                for _, row in subset.iterrows():
-                    if row['Coach'] == coach:
-                        side_str = f" (Side: {row['Side_Coach']})" if row['Side_Coach'] != "None" else ""
-                        output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']}{side_str}\n"
-                    elif row['Side_Coach'] == coach:
-                        main_str = f" (Main: {row['Coach']})" if row['Coach'] != "None" else ""
-                        output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
+                # Prende l'orario e il pod del primissimo atleta assegnato a questo coach
+                first_time = subset.iloc[0]['Time_Sort']
+                first_pod = subset.iloc[0]['Pod']
+                first_strip = subset.iloc[0]['Strip']
+                coach_order_list.append((coach, first_time, first_pod, first_strip))
+        
+        # Step 2: Ordina i Coach (Prima per orario, poi per Pod alfabetico)
+        coach_order_list.sort(key=lambda x: (x[1], x[2], x[3]))
+        
+        # Step 3: Genera il testo nel nuovo ordine
+        for coach_data in coach_order_list:
+            coach = coach_data[0]
+            is_main = export_df['Coach'] == coach
+            is_side = export_df['Side_Coach'] == coach
+            subset = export_df[is_main | is_side]
+            
+            output += f"\n--- {coach.upper()} ---\n"
+            for _, row in subset.iterrows():
+                if row['Coach'] == coach:
+                    side_str = f" (Side: {row['Side_Coach']})" if row['Side_Coach'] != "None" else ""
+                    output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']}{side_str}\n"
+                elif row['Side_Coach'] == coach:
+                    main_str = f" (Main: {row['Coach']})" if row['Coach'] != "None" else ""
+                    output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
+        
         st.code(output)
