@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import io
 
 st.set_page_config(layout="wide")
 st.title("🏃‍♂️ CompCoach Pro")
@@ -13,21 +11,30 @@ raw_input = st.text_area("Paste list here:", height=100)
 if st.button("Load List"):
     if raw_input:
         try:
-            lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
-            df_temp = pd.DataFrame(lines)
+            # Convertiamo immediatamente l'input in stringhe pure Python per uccidere il bug Arrow
+            lines = []
+            for line in raw_input.split('\n'):
+                if line.strip():
+                    parts = [str(p).strip() for p in line.split('\t')]
+                    lines.append(parts)
             
+            df_temp = pd.DataFrame(lines)
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            df['Pod'] = [str(x).upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
+            # Forziamo ogni singola colonna a essere testo nativo standard
+            df['Athlete'] = df['Athlete'].astype(str)
+            df['Strip'] = df['Strip'].astype(str)
+            df['Time'] = df['Time'].astype(str)
             
+            df['Pod'] = [str(x).upper() if x and x != "None" else "" for x in df['Strip']]
             df['Time_Sort'] = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
             df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
             
             df['Coach'] = "None"
             df['Side_Coach'] = "None"
             
-            df['Display'] = "Strip " + df['Strip'].astype(str) + " | " + df['Athlete'].astype(str)
+            df['Display'] = "Strip " + df['Strip'] + " | " + df['Athlete']
             
             st.session_state['df'] = df
             st.session_state['reset_counter'] = 0
@@ -54,8 +61,6 @@ if 'df' in st.session_state:
     st.write("**3. Select Athletes:**")
     
     ui_df = df.copy()
-    ui_df['Coach'] = ui_df['Coach'].astype(str)
-    ui_df['Side_Coach'] = ui_df['Side_Coach'].astype(str)
     ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
     ui_df = ui_df.sort_values(by=['Is_Assigned', 'Time_Sort', 'Pod', 'Strip'])
     
@@ -64,11 +69,11 @@ if 'df' in st.session_state:
     
     with st.container(height=350):
         for _, row in ui_df.iterrows():
-            athlete_display = row['Display']
+            athlete_display = str(row['Display'])
             
             if row['Is_Assigned']:
-                main_init = str(row['Coach'])[:3].upper() if str(row['Coach']) != "None" else "-"
-                side_init = str(row['Side_Coach'])[:3].upper() if str(row['Side_Coach']) != "None" else "-"
+                main_init = str(row['Coach'])[:3].upper() if row['Coach'] != "None" else "-"
+                side_init = str(row['Side_Coach'])[:3].upper() if row['Side_Coach'] != "None" else "-"
                 ui_label = f"✅ {athlete_display} [M: {main_init} | S: {side_init}]"
             else:
                 ui_label = athlete_display
@@ -95,77 +100,60 @@ if 'df' in st.session_state:
             
     st.divider()
     
-    # --- 3. EXPORT IMAGE FOR WHATSAPP ---
+    # --- 3. EXPORT TEXT FOR WHATSAPP ---
     st.subheader("📱 Export Schedule")
-    if st.button("📸 Generate Image"):
+    if st.button("📝 Generate WhatsApp Text"):
         output = ""
-        export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
         
-        export_df['Coach'] = export_df['Coach'].astype(str)
-        export_df['Side_Coach'] = export_df['Side_Coach'].astype(str)
-        
+        # Estraiamo i dati convertendoli in dizionari Python puri al 100% (Zero Pandas/Arrow oggetti)
+        records = []
+        for _, r in df.iterrows():
+            records.append({
+                'Athlete': str(r['Athlete']),
+                'Strip': str(r['Strip']),
+                'Time': str(r['Time']),
+                'Pod': str(r['Pod']),
+                'Coach': str(r['Coach']),
+                'Side_Coach': str(r['Side_Coach']),
+                'Time_Sort': r['Time_Sort']
+            })
+            
         coach_order_list = []
         for coach in COACH_LIST:
             coach_str = str(coach)
-            is_main = export_df['Coach'] == coach_str
-            is_side = export_df['Side_Coach'] == coach_str
-            subset = export_df[is_main | is_side]
+            coach_records = [r for r in records if r['Coach'] == coach_str or r['Side_Coach'] == coach_str]
             
-            if not subset.empty:
-                # Utilizziamo .values al posto di .iloc per massima sicurezza
-                first_time_raw = str(subset['Time'].values)
-                first_pod = str(subset['Pod'].values)
-                first_strip = str(subset['Strip'].values)
+            if coach_records:
+                # Ordiniamo i record di questo specifico coach per tempo/pod
+                coach_records.sort(key=lambda x: (x['Time_Sort'] if pd.notna(x['Time_Sort']) else pd.Timestamp.max, x['Pod'], x['Strip']))
+                first_rec = coach_records
                 
-                try:
-                    time_val = pd.to_datetime(first_time_raw, format='%I:%M %p')
-                except:
-                    time_val = first_time_raw
-                    
-                coach_order_list.append((coach_str, time_val, first_pod, first_strip))
+                coach_order_list.append({
+                    'coach': coach_str,
+                    'first_time': first_rec['Time_Sort'] if pd.notna(first_rec['Time_Sort']) else pd.Timestamp.max,
+                    'first_pod': first_rec['Pod'],
+                    'first_strip': first_rec['Strip'],
+                    'records': coach_records
+                })
         
-        try:
-            coach_order_list.sort(key=lambda x: (x, x, x))
-        except TypeError:
-            coach_order_list.sort(key=lambda x: (str(x), str(x), str(x)))
+        # Ordiniamo geograficamente i blocchi dei Coach (Prima per Tempo, poi alfabeticamente per Pod)
+        coach_order_list.sort(key=lambda x: (x['first_time'], x['first_pod'], x['first_strip']))
         
-        for coach_data in coach_order_list:
-            coach = str(coach_data) 
-            is_main = export_df['Coach'] == coach
-            is_side = export_df['Side_Coach'] == coach
-            subset = export_df[is_main | is_side]
+        # Costruiamo la stringa finale senza caratteri di sistema strani
+        for data in coach_order_list:
+            c_name = data['coach']
+            output += f"\n--- {c_name.upper()} ---\n"
             
-            output += f"\n--- {coach.upper()} ---\n"
-            for _, row in subset.iterrows():
-                if str(row['Coach']) == coach:
-                    side_str = f" (Side: {row['Side_Coach']})" if str(row['Side_Coach']) != "None" else ""
-                    output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']}{side_str}\n"
-                elif str(row['Side_Coach']) == coach:
-                    main_str = f" (Main: {row['Coach']})" if str(row['Coach']) != "None" else ""
-                    output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
+            for r in data['records']:
+                t = r['Time']
+                s = r['Strip']
+                a = r['Athlete']
+                
+                if r['Coach'] == c_name:
+                    side_str = f" (Side: {r['Side_Coach']})" if r['Side_Coach'] != "None" else ""
+                    output += f"{t} | Strip {s} | {a}{side_str}\n"
+                elif r['Side_Coach'] == c_name:
+                    main_str = f" (Main: {r['Coach']})" if r['Coach'] != "None" else ""
+                    output += f"{t} | Strip {s} | {a} [YOU ARE SIDE]{main_str}\n"
         
-        with st.spinner("Generating high quality image..."):
-            lines = output.strip().split('\n')
-            fig_height = max(4.0, len(lines) * 0.28) 
-            
-            fig, ax = plt.subplots(figsize=(9, fig_height), facecolor='#0E1117')
-            ax.axis('off')
-            
-            ax.text(0.01, 0.99, output.strip(), 
-                    fontsize=13, 
-                    color='#FAFAFA', 
-                    family='monospace', 
-                    verticalalignment='top', 
-                    transform=ax.transAxes)
-            
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', dpi=200, facecolor='#0E1117')
-            buf.seek(0)
-            
-            st.success("Image generated! 👇 Long-press on the image below and tap 'Share' to send via WhatsApp.")
-            st.image(buf)
-            
-            st.download_button("💾 Save Image to Device", buf, file_name="AFM_Schedule.png", mime="image/png")
-            
-            with st.expander("Show Text Version"):
-                st.code(output.strip())
+        st.code(output.strip())
