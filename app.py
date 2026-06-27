@@ -14,7 +14,8 @@ if st.button("Elabora Lista"):
         try:
             lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
             df_temp = pd.DataFrame(lines)
-            # Selezioniamo le colonne 0, 2, 3 basandoci sulla tua struttura
+            
+            # Selezioniamo le colonne 0, 2, 3 correttamente
             df = df_temp[].copy()
             df.columns = ['Atleta', 'Orario', 'Pedana']
             
