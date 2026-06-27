@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+import io
 
 st.set_page_config(layout="wide")
 st.title("🏃‍♂️ CompCoach Pro")
@@ -17,7 +19,7 @@ if st.button("Load List"):
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            df['Pod'] = [str(x)[0].upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
+            df['Pod'] = [str(x).upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
             
             df['Time_Sort'] = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
             df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
@@ -42,7 +44,7 @@ if 'df' in st.session_state:
     
     st.divider()
     
-    # --- 2. ASSIGNMENT SECTION (Top to Bottom flow) ---
+    # --- 2. ASSIGNMENT SECTION ---
     st.subheader("✍️ Assignment")
     
     main_coach = st.radio("1. Select Main Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
@@ -51,7 +53,6 @@ if 'df' in st.session_state:
     st.write("---")
     st.write("**3. Select Athletes:**")
     
-    # LOGICA DI ORDINAMENTO UI: Separiamo chi è assegnato da chi non lo è
     ui_df = df.copy()
     ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
     ui_df = ui_df.sort_values(by=['Is_Assigned', 'Time_Sort', 'Pod', 'Strip'])
@@ -92,12 +93,12 @@ if 'df' in st.session_state:
             
     st.divider()
     
-    # --- 3. WHATSAPP OUTPUT ---
-    if st.button("Generate WhatsApp Text"):
+    # --- 3. EXPORT IMAGE FOR WHATSAPP ---
+    st.subheader("📱 Export Schedule")
+    if st.button("📸 Generate Image"):
         output = ""
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
         
-        # Step 1: Analizza chi allena cosa per ordinare i blocchi dei Coach
         coach_order_list = []
         for coach in COACH_LIST:
             is_main = export_df['Coach'] == coach
@@ -105,18 +106,15 @@ if 'df' in st.session_state:
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                # Prende l'orario e il pod del primissimo atleta assegnato a questo coach
-                first_time = subset.iloc[0]['Time_Sort']
-                first_pod = subset.iloc[0]['Pod']
-                first_strip = subset.iloc[0]['Strip']
+                first_time = subset.iloc['Time_Sort']
+                first_pod = subset.iloc['Pod']
+                first_strip = subset.iloc['Strip']
                 coach_order_list.append((coach, first_time, first_pod, first_strip))
         
-        # Step 2: Ordina i Coach (Prima per orario, poi per Pod alfabetico)
-        coach_order_list.sort(key=lambda x: (x[1], x[2], x[3]))
+        coach_order_list.sort(key=lambda x: (x, x, x))
         
-        # Step 3: Genera il testo nel nuovo ordine
         for coach_data in coach_order_list:
-            coach = coach_data[0]
+            coach = coach_data
             is_main = export_df['Coach'] == coach
             is_side = export_df['Side_Coach'] == coach
             subset = export_df[is_main | is_side]
@@ -130,4 +128,34 @@ if 'df' in st.session_state:
                     main_str = f" (Main: {row['Coach']})" if row['Coach'] != "None" else ""
                     output += f"{row['Time']} | Strip {row['Strip']} | {row['Athlete']} [YOU ARE SIDE]{main_str}\n"
         
-        st.code(output)
+        # Generazione Grafica (Matplotlib)
+        with st.spinner("Generating high quality image..."):
+            lines = output.strip().split('\n')
+            # Calcola l'altezza in base al numero di righe per evitare che il testo si tagli
+            fig_height = max(4.0, len(lines) * 0.28) 
+            
+            fig, ax = plt.subplots(figsize=(9, fig_height), facecolor='#0E1117') # Sfondo Dark Streamlit
+            ax.axis('off')
+            
+            # Scrittura del testo sull'immagine con font monospace
+            ax.text(0.01, 0.99, output.strip(), 
+                    fontsize=13, 
+                    color='#FAFAFA', 
+                    family='monospace', 
+                    verticalalignment='top', 
+                    transform=ax.transAxes)
+            
+            # Salvataggio in memoria
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', dpi=200, facecolor='#0E1117')
+            buf.seek(0)
+            
+            st.success("Image generated! 👇 Long-press on the image below and tap 'Share' to send via WhatsApp.")
+            st.image(buf)
+            
+            # Aggiungo anche un tasto di download per sicurezza
+            st.download_button("💾 Save Image to Device", buf, file_name="AFM_Schedule.png", mime="image/png")
+            
+            # Mostriamo anche il testo originale nascosto in caso serva copiare un nome al volo
+            with st.expander("Show Text Version"):
+                st.code(output.strip())
