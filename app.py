@@ -54,6 +54,9 @@ if 'df' in st.session_state:
     st.write("**3. Select Athletes:**")
     
     ui_df = df.copy()
+    # Forzatura del formato stringa per evitare errori PyArrow
+    ui_df['Coach'] = ui_df['Coach'].astype(str)
+    ui_df['Side_Coach'] = ui_df['Side_Coach'].astype(str)
     ui_df['Is_Assigned'] = (ui_df['Coach'] != "None") | (ui_df['Side_Coach'] != "None")
     ui_df = ui_df.sort_values(by=['Is_Assigned', 'Time_Sort', 'Pod', 'Strip'])
     
@@ -97,16 +100,19 @@ if 'df' in st.session_state:
     st.subheader("📱 Export Schedule")
     if st.button("📸 Generate Image"):
         output = ""
-        export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
+        export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
+        
+        # Forzatura del formato stringa prima del confronto per aggirare il TypeError
+        export_df['Coach'] = export_df['Coach'].astype(str)
+        export_df['Side_Coach'] = export_df['Side_Coach'].astype(str)
         
         coach_order_list = []
         for coach in COACH_LIST:
-            is_main = export_df['Coach'] == coach
-            is_side = export_df['Side_Coach'] == coach
+            is_main = export_df['Coach'] == str(coach)
+            is_side = export_df['Side_Coach'] == str(coach)
             subset = export_df[is_main | is_side]
             
             if not subset.empty:
-                # Modifica della sintassi per evitare il TypeError
                 first_time = subset['Time_Sort'].values
                 first_pod = subset['Pod'].values
                 first_strip = subset['Strip'].values
@@ -116,8 +122,8 @@ if 'df' in st.session_state:
         
         for coach_data in coach_order_list:
             coach = coach_data
-            is_main = export_df['Coach'] == coach
-            is_side = export_df['Side_Coach'] == coach
+            is_main = export_df['Coach'] == str(coach)
+            is_side = export_df['Side_Coach'] == str(coach)
             subset = export_df[is_main | is_side]
             
             output += f"\n--- {coach.upper()} ---\n"
