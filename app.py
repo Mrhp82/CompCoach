@@ -14,70 +14,92 @@ if st.button("Load List"):
             lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
             df_temp = pd.DataFrame(lines)
             
-            # Extract first 4 columns
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            # Implicit Pod logic (extracts the letter from the Strip, e.g., 'M' from 'M1')
             df['Pod'] = [str(x).upper() if pd.notna(x) and str(x) else "" for x in df['Strip']]
             
-            # Sort by Time, then Pod, then Strip
             df['Time_Sort'] = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
             df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
             
             df['Coach'] = "None"
             df['Side_Coach'] = "None"
             
-            # Display label for the multiselect
             df['Display'] = "Strip " + df['Strip'].astype(str) + " | " + df['Athlete'].astype(str)
             
             st.session_state['df'] = df
+            # Initialize empty set for pure-touch selections
+            st.session_state['selected_athletes'] = set()
         except Exception as e:
-            st.error(f"Formatting error. Please check the pasted text. Details: {e}")
+            st.error(f"Formatting error: {e}")
 
 if 'df' in st.session_state:
     df = st.session_state['df']
     
-    # 1. STRIP MAP
+    # --- 1. STRIP MAP ---
     st.subheader("📍 Strip Map")
-    # Clean display for mobile
     display_df = df[['Time', 'Strip', 'Athlete', 'Coach', 'Side_Coach']]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     st.divider()
     
-    # 2. ASSIGN COACHES (Simultaneous Assignment)
-    st.subheader("✍️ Assign Coaches")
+    # --- 2. SELECT ATHLETES (PURE TOUCH, NO KEYBOARD) ---
+    st.subheader("👆 1. Select Athletes")
     
-    main_coach = st.radio("Main Coach:", COACH_LIST, horizontal=True)
-    side_coach = st.radio("Side Coach (Optional):", ["None"] + COACH_LIST, horizontal=True)
+    # Pod Filter buttons
+    available_pods = ["All"] + sorted(df['Pod'].unique().tolist())
+    pod_filter = st.radio("Filter by Pod:", available_pods, horizontal=True)
+    
+    if pod_filter == "All":
+        athletes_to_show = df['Display'].tolist()
+    else:
+        athletes_to_show = df[df['Pod'] == pod_filter]['Display'].tolist()
         
-    st.info("💡 Tip: Tap the box below and type the Pod letter (e.g., 'M') to filter quickly!")
+    st.caption("Tap to select/deselect (keyboard won't open):")
     
-    # Dynamic key: automatically clears selections when you change either coach!
-    ms_key = f"ms_{main_coach}_{side_coach}"
+    # Scrollable container for checkboxes
+    with st.container(height=250):
+        for athlete in athletes_to_show:
+            is_checked = athlete in st.session_state['selected_athletes']
+            
+            # If user taps the checkbox, update the set in session_state
+            if st.checkbox(athlete, value=is_checked, key=f"chk_{athlete}"):
+                st.session_state['selected_athletes'].add(athlete)
+            else:
+                st.session_state['selected_athletes'].discard(athlete)
+                
+    st.write(f"**Selected:** {len(st.session_state['selected_athletes'])} athletes")
     
-    selected_display = st.multiselect(
-        f"Select athletes:", 
-        df['Display'].tolist(),
-        key=ms_key
-    )
+    st.divider()
+
+    # --- 3. ASSIGN COACHES ---
+    st.subheader("✍️ 2. Assign Coaches")
+    
+    main_coach = st.radio("Main Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
+    side_coach = st.radio("Side Coach:", ["No Change", "None"] + COACH_LIST, horizontal=True)
     
     if st.button("✅ Confirm Assignment"):
-        # Assign Main Coach
-        df.loc[df['Display'].isin(selected_display), 'Coach'] = main_coach
-        # Assign Side Coach
-        df.loc[df['Display'].isin(selected_display), 'Side_Coach'] = side_coach
+        if not st.session_state['selected_athletes']:
+            st.warning("Please select at least one athlete first!")
+        else:
+            selected_list = list(st.session_state['selected_athletes'])
             
-        st.session_state['df'] = df
-        st.rerun()
-        
+            if main_coach != "No Change":
+                df.loc[df['Display'].isin(selected_list), 'Coach'] = main_coach
+            
+            if side_coach != "No Change":
+                df.loc[df['Display'].isin(selected_list), 'Side_Coach'] = side_coach
+                
+            st.session_state['df'] = df
+            # Clear selection after successful assignment
+            st.session_state['selected_athletes'] = set()
+            st.rerun()
+            
     st.divider()
     
-    # 3. WHATSAPP OUTPUT
+    # --- 4. WHATSAPP OUTPUT ---
     if st.button("Generate WhatsApp Text"):
         output = ""
-        # Re-sort before export to ensure alphabetical Pod order
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
         
         for coach in COACH_LIST:
