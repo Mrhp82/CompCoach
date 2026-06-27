@@ -15,9 +15,11 @@ if st.button("Elabora Lista"):
             lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
             df_temp = pd.DataFrame(lines)
             
-            # Selezioniamo le colonne 0, 2, 3 correttamente
-            df = df_temp[].copy()
+                        # Selezione semplificata delle colonne
+            df = df_temp.iloc[:,].copy()
             df.columns = ['Atleta', 'Orario', 'Pedana']
+
+
             
             # Formattazione per sorting
             df['Orario_Sort'] = pd.to_datetime(df['Orario'], format='%I:%M %p', errors='coerce')
