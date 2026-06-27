@@ -11,7 +11,6 @@ raw_input = st.text_area("Paste list here:", height=100)
 if st.button("Load List"):
     if raw_input:
         try:
-            # Convertiamo immediatamente l'input in stringhe pure Python per uccidere il bug Arrow
             lines = []
             for line in raw_input.split('\n'):
                 if line.strip():
@@ -22,13 +21,16 @@ if st.button("Load List"):
             df = df_temp.iloc[:, 0:4].copy()
             df.columns = ['Athlete', 'Strip', 'Time', 'Strip_Num']
             
-            # Forziamo ogni singola colonna a essere testo nativo standard
             df['Athlete'] = df['Athlete'].astype(str)
             df['Strip'] = df['Strip'].astype(str)
             df['Time'] = df['Time'].astype(str)
             
             df['Pod'] = [str(x).upper() if x and x != "None" else "" for x in df['Strip']]
-            df['Time_Sort'] = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
+            
+            # TRUCCO INFALLIBILE: Convertiamo in orario 24h ("14:00") come puro testo per il sorting
+            temp_time = pd.to_datetime(df['Time'], format='%I:%M %p', errors='coerce')
+            df['Time_Sort'] = temp_time.dt.strftime('%H:%M').fillna('99:99')
+            
             df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip'])
             
             df['Coach'] = "None"
@@ -105,7 +107,7 @@ if 'df' in st.session_state:
     if st.button("📝 Generate WhatsApp Text"):
         output = ""
         
-        # Estraiamo i dati convertendoli in dizionari Python puri al 100% (Zero Pandas/Arrow oggetti)
+        # Nessun oggetto Pandas qui dentro, solo testo puro.
         records = []
         for _, r in df.iterrows():
             records.append({
@@ -115,7 +117,7 @@ if 'df' in st.session_state:
                 'Pod': str(r['Pod']),
                 'Coach': str(r['Coach']),
                 'Side_Coach': str(r['Side_Coach']),
-                'Time_Sort': r['Time_Sort']
+                'Time_Sort': str(r['Time_Sort']) # Stringa garantita (es. "14:00")
             })
             
         coach_order_list = []
@@ -124,22 +126,20 @@ if 'df' in st.session_state:
             coach_records = [r for r in records if r['Coach'] == coach_str or r['Side_Coach'] == coach_str]
             
             if coach_records:
-                # Ordiniamo i record di questo specifico coach per tempo/pod
-                coach_records.sort(key=lambda x: (x['Time_Sort'] if pd.notna(x['Time_Sort']) else pd.Timestamp.max, x['Pod'], x['Strip']))
+                # Ordinamento puramente alfabetico
+                coach_records.sort(key=lambda x: (x['Time_Sort'], x['Pod'], x['Strip']))
                 first_rec = coach_records
                 
                 coach_order_list.append({
                     'coach': coach_str,
-                    'first_time': first_rec['Time_Sort'] if pd.notna(first_rec['Time_Sort']) else pd.Timestamp.max,
+                    'first_time': first_rec['Time_Sort'],
                     'first_pod': first_rec['Pod'],
                     'first_strip': first_rec['Strip'],
                     'records': coach_records
                 })
         
-        # Ordiniamo geograficamente i blocchi dei Coach (Prima per Tempo, poi alfabeticamente per Pod)
         coach_order_list.sort(key=lambda x: (x['first_time'], x['first_pod'], x['first_strip']))
         
-        # Costruiamo la stringa finale senza caratteri di sistema strani
         for data in coach_order_list:
             c_name = data['coach']
             output += f"\n--- {c_name.upper()} ---\n"
