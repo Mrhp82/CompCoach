@@ -1,55 +1,42 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(layout="wide")
-st.title("🏃‍♂️ CompCoach Pro")
+st.set_page_config(layout="centered")
+st.title("🏃‍♂️ CompCoach Fast")
 
-# Lista coach aggiornata
 COACH_LIST = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 
-raw_input = st.text_area("Incolla qui la lista:", height=150)
+raw_input = st.text_area("Incolla lista:", height=100)
 
-if st.button("Elabora Lista"):
-    if raw_input:
-        try:
-            lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
-            df_temp = pd.DataFrame(lines)
-            
-            # Selezione dinamica delle prime 3 colonne (Nome, Orario, Pedana)
-            df = df_temp.iloc[:, 0:3].copy()
-            df.columns = ['Atleta', 'Orario', 'Pedana']
-            
-            # Formattazione per sorting
-            df['Orario_Sort'] = pd.to_datetime(df['Orario'], format='%I:%M %p', errors='coerce')
-            df = df.sort_values(by=['Orario_Sort', 'Pedana'])
-            
-            df['Coach'] = "Nessuno"
-            df['Side Coach'] = "Nessuno"
-            
-            st.session_state['df'] = df
-            st.success("Lista caricata! Assegna i coach.")
-        except Exception as e:
-            st.error(f"Errore: {e}")
+if st.button("Carica Lista"):
+    lines = [line.split('\t') for line in raw_input.split('\n') if line.strip()]
+    df = pd.DataFrame(lines).iloc[:, 0:3]
+    df.columns = ['Atleta', 'Orario', 'Pedana']
+    df['Coach'] = "Nessuno"
+    st.session_state['df'] = df
 
 if 'df' in st.session_state:
     df = st.session_state['df']
     
-    st.write("### Assegnazioni")
-    # Editor interattivo
-    edited_df = st.data_editor(df.drop(columns=['Orario_Sort']), column_config={
-        "Coach": st.column_config.SelectboxColumn(options=COACH_LIST, required=True),
-        "Side Coach": st.column_config.SelectboxColumn(options=["Nessuno"] + COACH_LIST)
-    }, hide_index=True)
+    # 1. Seleziona Coach
+    target_coach = st.selectbox("Assegna a:", COACH_LIST)
     
-    if st.button("Genera Output WhatsApp"):
-        st.subheader("📋 Copia questo testo:")
+    # 2. Selezione multipla rapida (checkbox o multiselect)
+    # Multiselect è il più veloce su iPhone per grandi liste
+    selected = st.multiselect("Seleziona atleti per " + target_coach, df['Atleta'].tolist())
+    
+    if st.button("Assegna"):
+        df.loc[df['Atleta'].isin(selected), 'Coach'] = target_coach
+        st.session_state['df'] = df
+        st.success(f"Assegnati {len(selected)} atleti a {target_coach}")
+
+    # 3. Output compatto
+    if st.button("Genera Testo WhatsApp"):
         output = ""
-        # Raggruppiamo per coach principale
         for coach in COACH_LIST:
-            subset = edited_df[edited_df['Coach'] == coach]
+            subset = df[df['Coach'] == coach]
             if not subset.empty:
                 output += f"\n--- {coach.upper()} ---\n"
                 for _, row in subset.iterrows():
-                    side = f" (Side: {row['Side Coach']})" if row['Side Coach'] != "Nessuno" else ""
-                    output += f"P{row['Pedana']} | {row['Atleta']} | {row['Orario']}{side}\n"
+                    output += f"P{row['Pedana']} | {row['Atleta']} | {row['Orario']}\n"
         st.code(output)
