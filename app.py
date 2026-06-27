@@ -40,35 +40,34 @@ if 'df' in st.session_state:
     
     # 1. STRIP MAP
     st.subheader("📍 Strip Map")
-    # Clean display for mobile, keeping it simple
+    # Clean display for mobile
     display_df = df[['Time', 'Strip', 'Athlete', 'Coach', 'Side_Coach']]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     st.divider()
     
-    # 2. ASSIGN COACH
-    st.subheader("✍️ Assign Coach")
+    # 2. ASSIGN COACHES (Simultaneous Assignment)
+    st.subheader("✍️ Assign Coaches")
     
-    # Using radio buttons prevents the iOS keyboard from popping up
-    target_coach = st.radio("Select Coach:", COACH_LIST, horizontal=True)
-    role = st.radio("Role:", ["Coach", "Side Coach"], horizontal=True)
+    main_coach = st.radio("Main Coach:", COACH_LIST, horizontal=True)
+    side_coach = st.radio("Side Coach (Optional):", ["None"] + COACH_LIST, horizontal=True)
         
     st.info("💡 Tip: Tap the box below and type the Pod letter (e.g., 'M') to filter quickly!")
     
-    # Dynamic key: automatically clears selections when you change coach or role!
-    ms_key = f"ms_{target_coach}_{role}"
+    # Dynamic key: automatically clears selections when you change either coach!
+    ms_key = f"ms_{main_coach}_{side_coach}"
     
     selected_display = st.multiselect(
-        f"Select athletes for {target_coach} ({role}):", 
+        f"Select athletes:", 
         df['Display'].tolist(),
         key=ms_key
     )
     
     if st.button("✅ Confirm Assignment"):
-        if role == "Coach":
-            df.loc[df['Display'].isin(selected_display), 'Coach'] = target_coach
-        else:
-            df.loc[df['Display'].isin(selected_display), 'Side_Coach'] = target_coach
+        # Assign Main Coach
+        df.loc[df['Display'].isin(selected_display), 'Coach'] = main_coach
+        # Assign Side Coach
+        df.loc[df['Display'].isin(selected_display), 'Side_Coach'] = side_coach
             
         st.session_state['df'] = df
         st.rerun()
