@@ -103,7 +103,6 @@ if 'df' in st.session_state:
         
         export_df = df.sort_values(by=['Time_Sort', 'Pod', 'Strip']).copy()
         
-        # TRUCCO GENIALE: Troviamo l'ordine dei coach leggendo la tabella dall'alto verso il basso!
         coach_order = []
         for _, row in export_df.iterrows():
             c = str(row['Coach'])
@@ -113,13 +112,14 @@ if 'df' in st.session_state:
             if sc in COACH_LIST and sc not in coach_order:
                 coach_order.append(sc)
                 
-        # Generiamo il testo seguendo questo ordine naturale
+        # Layout ottimizzato per la chat di WhatsApp (Niente tabelle, formato ad elenco)
         for coach in coach_order:
             is_main = export_df['Coach'] == coach
             is_side = export_df['Side_Coach'] == coach
             subset = export_df[is_main | is_side]
             
-            output += f"\n--- {coach.upper()} ---\n"
+            # Gli asterischi creano il grassetto automatico su WhatsApp
+            output += f"\n🤺 *{coach.upper()}*\n"
             
             for _, row in subset.iterrows():
                 t = str(row['Time'])
@@ -127,10 +127,10 @@ if 'df' in st.session_state:
                 a = str(row['Athlete'])
                 
                 if str(row['Coach']) == coach:
-                    side_str = f" (Side: {row['Side_Coach']})" if str(row['Side_Coach']) != "None" else ""
-                    output += f"{t} | Strip {s} | {a}{side_str}\n"
+                    side_str = f" [Side: {row['Side_Coach']}]" if str(row['Side_Coach']) != "None" else ""
+                    output += f"🔹 {t} - Strip {s}: {a}{side_str}\n"
                 elif str(row['Side_Coach']) == coach:
-                    main_str = f" (Main: {row['Coach']})" if str(row['Coach']) != "None" else ""
-                    output += f"{t} | Strip {s} | {a} [YOU ARE SIDE]{main_str}\n"
+                    main_str = f" [Main: {row['Coach']}]" if str(row['Coach']) != "None" else ""
+                    output += f"🔸 {t} - Strip {s}: {a} [YOU ARE SIDE]{main_str}\n"
                     
         st.code(output.strip())
