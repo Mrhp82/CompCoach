@@ -124,7 +124,6 @@ if 'df' in st.session_state:
                 for coach in COACH_LIST:
                     if coach in time_subset['Coach'].values or coach in time_subset['Side_Coach'].values:
                         coach_records = time_subset[(time_subset['Coach'] == coach) | (time_subset['Side_Coach'] == coach)]
-                        # Addio ILOC! Usiamo .values che è nativo e non va mai in errore di tipo
                         first_pod = str(coach_records['Pod'].values)
                         first_strip = str(coach_records['Strip'].values)
                         active_coaches.append({'name': coach, 'pod': first_pod, 'strip': first_strip})
@@ -143,11 +142,15 @@ if 'df' in st.session_state:
                         a = str(row['Athlete'])
                         
                         if str(row['Coach']) == coach_name:
-                            side_str = f" [Side: {row['Side_Coach']}]" if str(row['Side_Coach']) != "None" else ""
+                            side_val = str(row['Side_Coach'])
+                            # Etichetta ultra-compatta per il Side Coach [S: NOME]
+                            side_str = f" [S: {side_val[:3].upper()}]" if side_val != "None" else ""
                             output += f"🔹 {s}: {a}{side_str}\n"
                         elif str(row['Side_Coach']) == coach_name:
-                            main_str = f" [Main: {row['Coach']}]" if str(row['Coach']) != "None" else ""
-                            output += f"🔸 {s}: {a} [YOU ARE SIDE]{main_str}\n"
+                            main_val = str(row['Coach'])
+                            # L'icona arancione indica già che sei Side. Aggiungiamo solo [M: NOME]
+                            main_str = f" [M: {main_val[:3].upper()}]" if main_val != "None" else ""
+                            output += f"🔸 {s}: {a}{main_str}\n"
                 
                 output += "\n" + "—"*15 + "\n\n"
                 
