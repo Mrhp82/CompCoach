@@ -1,0 +1,6 @@
+| Name | Strip # | Club | Division | Country |
+| --- | --- | --- | --- | --- |
+| DING Max | M1 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| EVANS Evan | P | Academy Of Fencing Masters (AFM) | Central California | USA |
+| CHIRASHNYA Daniel | P3 | Academy Of Fencing Masters (AFM) | Central California | USA |
+

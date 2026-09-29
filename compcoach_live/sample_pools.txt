@@ -1,0 +1,12 @@
+| Name | Strip # | Time | Pool # | Club | Division | Country |
+| --- | --- | --- | --- | --- | --- | --- |
+| AGLIPAY Alyssa | C3 | | 7 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| DEFENSOR Ella | C2 | | 6 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| HSU Audrey | B1 | | 2 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| LEE Lizzie | B2 | | 4 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| LUO Xinyue | C1 | | 1 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| TAN Elizabeth | D1 | | 9 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| WAGENAAR Ava | B3 | | 5 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| YE Charlotte | C4 | | 8 | Academy Of Fencing Masters (AFM) | Central California | USA |
+| YU Elise | B4 | | 3 | Academy Of Fencing Masters (AFM) | Central California | USA |
+
