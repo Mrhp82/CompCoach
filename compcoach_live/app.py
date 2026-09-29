@@ -21,8 +21,14 @@ import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
 try:
+    from compcoach_live.coach_setup import render_coach_management
+    from compcoach_live.competition_setup import (
+        render_competition_branding,
+        render_competition_profile,
+    )
     from compcoach_live.ocr_import import parse_screenshot
     from compcoach_live.parsers import parse_pasted_table
+    from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -30,8 +36,14 @@ try:
         ConcurrentUpdateError,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script fallback
+    from coach_setup import render_coach_management
+    from competition_setup import (
+        render_competition_branding,
+        render_competition_profile,
+    )
     from ocr_import import parse_screenshot
     from parsers import parse_pasted_table
+    from schedule_setup import render_competition_schedule
     from storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -40,7 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.6.0"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -130,6 +142,30 @@ st.markdown(
                     border-top:1px solid #f2f4f7;}
       .cc-plan-row:first-of-type {border-top:0;}
       .cc-plan-meta {color:#667085; font-size:.78rem;}
+      .cc-availability {border:1px solid #d0d5dd; border-radius:14px; padding:.68rem .75rem;
+                        margin:.35rem 0 .7rem; background:#fff;}
+      .cc-availability-on {border-color:#75e0a7; background:#ecfdf3;}
+      .cc-availability-title {font-weight:900; color:#101828;}
+      .cc-availability-meta {font-size:.8rem; color:#667085; margin-top:.12rem;}
+      .cc-coach-chips {display:flex; gap:.35rem; flex-wrap:wrap; margin:.4rem 0 .75rem;}
+      .cc-coach-chip {border-radius:999px; padding:.28rem .55rem; font-size:.78rem;
+                      font-weight:850; border:1px solid #d0d5dd; background:#f8fafc;
+                      color:#475467;}
+      .cc-coach-chip-on {border-color:#75e0a7; background:#dcfae6; color:#05603a;}
+      .cc-sector {border:1px solid #d0d5dd; border-radius:14px; padding:.62rem .7rem;
+                  margin:.42rem 0; background:#fff;}
+      .cc-sector-risk {border-color:#f97066; background:#fff8f7;}
+      .cc-sector-head {display:flex; justify-content:space-between; gap:.5rem;
+                       align-items:center; font-weight:900;}
+      .cc-sector-coaches {font-size:.82rem; color:#475467; margin:.22rem 0 .32rem;}
+      .cc-sector-row {font-size:.82rem; line-height:1.35; padding:.22rem 0;
+                      border-top:1px solid #f2f4f7;}
+      .cc-sector-row:first-of-type {border-top:0;}
+      .cc-risk {color:#b42318; font-weight:850;}
+      .cc-pool-row {display:flex; justify-content:space-between; gap:.65rem;
+                    border-top:1px solid #f2f4f7; padding:.42rem 0; font-size:.86rem;}
+      .cc-pool-row:first-of-type {border-top:0;}
+      .cc-pool-score {font-weight:900; white-space:nowrap; color:#344054;}
       .stToast {max-width:92vw;}
       @media (max-width: 520px) {
         .block-container {padding-left:.55rem; padding-right:.55rem;}
@@ -267,6 +303,66 @@ def load_meet_context(meet_id: str) -> tuple[list[dict], list[dict], dict[str, d
     return events, athletes, event_by_id
 
 
+def is_operational_athlete(athlete: dict) -> bool:
+    """Return whether an athlete belongs in current operational workflows."""
+
+    return (
+        athlete.get("active_state") == "active"
+        and athlete.get("participation_status", "active") == "active"
+    )
+
+
+def is_competitive_out(athlete: dict) -> bool:
+    """Keep Live Out limited to competitive elimination, not attendance state."""
+
+    return (
+        athlete.get("active_state") == "eliminated"
+        and athlete.get("participation_status", "active") == "active"
+    )
+
+
+def pool_wave_label_key(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def operational_view_athletes(athletes: list[dict]) -> list[dict]:
+    """Filter attendance and scheduled Pool waves for live operational views.
+
+    Direct Elimination and legacy Pool rows without a start time are always
+    visible. Timed Pool rows are visible only for the event's current wave.
+    """
+
+    operational = [row for row in athletes if is_operational_athlete(row)]
+    timed_event_ids = {
+        str(row.get("event_id") or "")
+        for row in operational
+        if row.get("phase") == "pools" and str(row.get("time_text") or "").strip()
+    }
+    visible_by_event: dict[str, set[str] | None] = {}
+    for event_id in timed_event_ids:
+        waves = db.list_pool_waves(event_id)
+        visible_by_event[event_id] = (
+            {
+                pool_wave_label_key(wave.get("label"))
+                for wave in waves
+                if wave.get("is_visible") or wave.get("is_active")
+            }
+            if waves
+            else None
+        )
+
+    filtered: list[dict] = []
+    for row in operational:
+        time_text = str(row.get("time_text") or "").strip()
+        if row.get("phase") != "pools" or not time_text:
+            filtered.append(row)
+            continue
+        visible = visible_by_event.get(str(row.get("event_id") or ""))
+        if visible is None or pool_wave_label_key(time_text) in visible:
+            filtered.append(row)
+    return filtered
+
+
 def athlete_event_label(athlete: dict) -> str:
     return str(athlete.get("event_name") or "Event")
 
@@ -275,6 +371,80 @@ def has_inactive_assignment(athlete: dict, event: dict) -> bool:
     active = set(event["active_coaches"])
     assigned = {athlete.get("main_coach"), athlete.get("side_coach")} - {"", None}
     return bool(assigned - active)
+
+
+def coach_workload(athletes: list[dict], coach: str) -> dict[str, object]:
+    """Return a meet-wide operational workload without declaring availability.
+
+    A recorded Pools W/L summary means that Pools duty is finished. A DE duty
+    remains open while the athlete is active, including after a Won result.
+    Temporary coverage, help response, and an unresolved help request made by
+    the coach also keep that athlete in the open-duty set.
+    """
+
+    operational = operational_view_athletes(athletes)
+    planned = [
+        row
+        for row in operational
+        if coach in {row.get("main_coach"), row.get("side_coach")}
+    ]
+    unfinished: dict[str, dict] = {}
+    for row in operational:
+        planned_here = coach in {row.get("main_coach"), row.get("side_coach")}
+        pools_pending = (
+            row.get("phase") == "pools"
+            and (row.get("pool_wins") is None or row.get("pool_losses") is None)
+        )
+        de_pending = row.get("phase") == "de"
+        temporary_duty = coach in {
+            row.get("covered_by"),
+            row.get("help_acknowledged_by"),
+            row.get("help_requested_by"),
+        }
+        if (planned_here and (pools_pending or de_pending)) or temporary_duty:
+            unfinished[str(row["id"])] = row
+    return {
+        "assigned_total": len(planned),
+        "unfinished": list(unfinished.values()),
+        "unfinished_count": len(unfinished),
+        "event_ids": {row["event_id"] for row in unfinished.values()},
+    }
+
+
+def athlete_sector(athlete: dict) -> str:
+    """Return a compact DE sector derived from pod or exact strip."""
+
+    pod = str(athlete.get("pod") or "").strip().upper()
+    if pod:
+        return pod
+    raw = str(
+        athlete.get("source_strip") or athlete.get("live_location") or ""
+    ).strip().upper()
+    raw = re.sub(r"^POD\s+", "", raw)
+    match = re.match(r"([A-Z]+)", raw)
+    return match.group(1) if match else "TBD"
+
+
+def sector_assignment_summary(rows: list[dict]) -> dict[str, object]:
+    mains = sorted({str(row.get("main_coach") or "").strip() for row in rows} - {""})
+    sides = sorted({str(row.get("side_coach") or "").strip() for row in rows} - {""})
+    covered = sorted({str(row.get("covered_by") or "").strip() for row in rows} - {""})
+    uncovered_calls = sum(
+        row.get("call_status") != "waiting"
+        and not row.get("covered_by")
+        and not is_stale(row)
+        for row in rows
+    )
+    mixed = len(mains) > 1 or len(sides) > 1
+    unassigned = any(not row.get("main_coach") and not row.get("side_coach") for row in rows)
+    return {
+        "mains": mains,
+        "sides": sides,
+        "covered": covered,
+        "mixed": mixed,
+        "unassigned": unassigned,
+        "uncovered_calls": uncovered_calls,
+    }
 
 
 def public_link(event: dict, role: str) -> str:
@@ -333,6 +503,9 @@ def clear_actor_state(event_id: str, role: str) -> None:
         "call_self_cover_",
         "live_view_",
         "dashboard_view_",
+        "situation_view_",
+        "availability_override_",
+        "deploy_",
         "active_event_",
     )
     for key in list(st.session_state):
@@ -432,8 +605,18 @@ def render_landing() -> None:
     with st.expander("➕ New competition", expanded=not existing_events):
         with st.form("create_event"):
             name = st.text_input("Competition or travel day", "AFM Competition")
+            location = st.text_input(
+                "Location",
+                "",
+                placeholder="Example: Salt Palace, Salt Lake City",
+            )
             competition_date = st.date_input(
-                "Competition date", value=datetime.now(ZoneInfo(TIMEZONES[0])).date()
+                "First competition day",
+                value=datetime.now(ZoneInfo(TIMEZONES[0])).date(),
+            )
+            competition_end_date = st.date_input(
+                "Last competition day",
+                value=competition_date,
             )
             first_event_name = st.text_input(
                 "First event (optional)",
@@ -448,6 +631,9 @@ def render_landing() -> None:
             timezone_name = st.selectbox("Competition timezone", TIMEZONES)
             create = st.form_submit_button("Create competition", width="stretch")
         if create:
+            if competition_end_date < competition_date:
+                st.error("Last competition day cannot be before the first day.")
+                return
             event = db.create_meet(
                 name,
                 coaches,
@@ -455,6 +641,15 @@ def render_landing() -> None:
                 timezone_name,
                 first_event_name=first_event_name.strip() or None,
                 competition_date=competition_date.isoformat(),
+                location=location,
+            )
+            db.update_competition(
+                event["competition_id"],
+                name=name,
+                location=location,
+                start_date=competition_date.isoformat(),
+                end_date=competition_end_date.isoformat(),
+                timezone_name=timezone_name,
             )
             set_open_event(event)
 
@@ -513,6 +708,7 @@ def render_header(event: dict, role: str) -> None:
         f"<span class='cc-role'>{role_label}</span></div>",
         unsafe_allow_html=True,
     )
+    render_competition_branding(db, event)
     if event.get("ended_at"):
         stamp = format_clock(event.get("ended_at"), event["timezone"])
         byline = f" by {event['ended_by']}" if event.get("ended_by") else ""
@@ -527,9 +723,10 @@ def render_header(event: dict, role: str) -> None:
 
 def render_phase_status(event: dict, role: str, actor: str) -> None:
     events, athletes, _ = load_meet_context(event["id"])
+    operational = operational_view_athletes(athletes)
     actor_event_ids = {
         athlete["event_id"]
-        for athlete in athletes
+        for athlete in operational
         if actor
         and actor
         in {
@@ -538,7 +735,6 @@ def render_phase_status(event: dict, role: str, actor: str) -> None:
             athlete.get("covered_by"),
             athlete.get("help_acknowledged_by"),
         }
-        and athlete["active_state"] == "active"
     }
     for child in events:
         states = db.get_phase_states(child["id"])
@@ -556,9 +752,8 @@ def render_phase_status(event: dict, role: str, actor: str) -> None:
             )
         connected_count = sum(
             1
-            for athlete in athletes
+            for athlete in operational
             if athlete["event_id"] == child["id"]
-            and athlete["active_state"] == "active"
             and actor
             in {
                 athlete.get("main_coach"),
@@ -1217,6 +1412,90 @@ def has_assignment(athlete: dict) -> bool:
     return bool(athlete.get("main_coach") or athlete.get("side_coach"))
 
 
+def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
+    """Return a case-insensitive key that sorts embedded numbers naturally."""
+
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"", "tbd"}:
+        return ((2, ""),)
+    parts = re.split(r"(\d+)", normalized)
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in parts
+        if part != ""
+    )
+
+
+def assignment_athlete_sort_key(athlete: dict) -> tuple[object, ...]:
+    """Order assignment rows by strip/pod, then pool and athlete name."""
+
+    location = athlete.get("source_strip") or athlete.get("pod") or ""
+    return (
+        natural_sort_key(location),
+        natural_sort_key(athlete.get("pool_no") or ""),
+        natural_sort_key(athlete.get("name") or ""),
+    )
+
+
+def order_coaches_by_assignment_usage(
+    coaches: list[str],
+    athletes: list[dict],
+    pod_assignments: list[dict],
+) -> tuple[list[str], set[str]]:
+    """Put unused coaches first without preventing cross-event reassignment.
+
+    ``athletes`` may contain multiple events from the same competition day.
+    Only operational athletes contribute planned or live coverage duties. A
+    stored pod assignment contributes only while its event/phase/pod still
+    contains an operational athlete. The returned coach values stay unchanged
+    so an already-used coach remains selectable across event boundaries.
+    """
+
+    used: set[str] = set()
+    operational = [athlete for athlete in athletes if is_operational_athlete(athlete)]
+    for athlete in operational:
+        used.update(
+            str(athlete.get(field) or "").strip()
+            for field in ("main_coach", "side_coach", "covered_by")
+        )
+    operational_pods = {
+        (
+            str(athlete.get("event_id") or ""),
+            str(athlete.get("phase") or ""),
+            str(athlete.get("pod") or "").strip().upper(),
+        )
+        for athlete in operational
+        if athlete.get("pod")
+    }
+    for assignment in pod_assignments:
+        assignment_pod = (
+            str(assignment.get("event_id") or ""),
+            str(assignment.get("phase") or ""),
+            str(assignment.get("pod") or "").strip().upper(),
+        )
+        if assignment_pod not in operational_pods:
+            continue
+        used.update(
+            str(assignment.get(field) or "").strip()
+            for field in ("main_coach", "side_coach")
+        )
+    used.discard("")
+
+    unique_coaches = list(dict.fromkeys(str(coach).strip() for coach in coaches))
+    unique_coaches = [coach for coach in unique_coaches if coach]
+    ordered = [coach for coach in unique_coaches if coach not in used]
+    ordered.extend(coach for coach in unique_coaches if coach in used)
+    return ordered, used
+
+
+def coach_assignment_option(coach: str, used_coaches: set[str]) -> str:
+    """Return the visible assignment-picker label for a coach value."""
+
+    if coach in {"No change", "None"} or coach not in used_coaches:
+        return coach
+    return f"✓ {coach} · already assigned"
+
+
 def assignment_option(athlete: dict) -> str:
     if not has_assignment(athlete):
         return athlete_option(athlete)
@@ -1233,29 +1512,232 @@ def render_assignment_card(athlete: dict, assigned: bool) -> None:
         st.caption(planned_coaches(athlete))
 
 
+def render_attendance_control(
+    event: dict,
+    phase: str,
+    athletes: list[dict],
+    actor: str,
+) -> None:
+    """Render reversible attendance controls without changing the saved plan."""
+
+    phase_rows = [row for row in athletes if row.get("phase") == phase]
+    active_rows = sorted(
+        [row for row in phase_rows if is_operational_athlete(row)],
+        key=assignment_athlete_sort_key,
+    )
+    status_rows = {
+        status: sorted(
+            [
+                row
+                for row in phase_rows
+                if row.get("participation_status", "active") == status
+            ],
+            key=assignment_athlete_sort_key,
+        )
+        for status in ("absent", "withdrawn")
+    }
+    inactive_count = sum(len(rows) for rows in status_rows.values())
+    label = "Attendance & withdrawals"
+    if inactive_count:
+        label += f" · {inactive_count}"
+    with st.expander(label, expanded=False):
+        st.caption(
+            "Attendance affects live work only. Planned coach assignments and history are kept."
+        )
+        selection_key = f"attendance_selected_{event['id']}_{phase}"
+        clear_key = f"{selection_key}_clear"
+        if st.session_state.pop(clear_key, False):
+            st.session_state[selection_key] = []
+        by_id = {row["id"]: row for row in active_rows}
+        selected = st.multiselect(
+            "Athletes currently participating",
+            list(by_id),
+            format_func=lambda athlete_id: athlete_option(by_id[athlete_id]),
+            key=selection_key,
+            placeholder="Select one or more athletes",
+        )
+        absent_column, withdrawn_column = st.columns(2)
+        with absent_column:
+            mark_absent = st.button(
+                "Mark absent",
+                width="stretch",
+                disabled=not selected or event["status"] != "open" or not actor,
+                key=f"mark_absent_{event['id']}_{phase}",
+            )
+        with withdrawn_column:
+            mark_withdrawn = st.button(
+                "Mark withdrawn",
+                width="stretch",
+                disabled=not selected or event["status"] != "open" or not actor,
+                key=f"mark_withdrawn_{event['id']}_{phase}",
+            )
+        if mark_absent or mark_withdrawn:
+            status = "absent" if mark_absent else "withdrawn"
+            try:
+                for athlete_id in selected:
+                    athlete = by_id[athlete_id]
+                    db.set_athlete_participation(
+                        event["id"],
+                        athlete_id,
+                        status,
+                        actor,
+                        expected_version=athlete["version"],
+                    )
+                st.session_state[clear_key] = True
+                st.toast(
+                    f"{len(selected)} athlete{'s' if len(selected) != 1 else ''} marked {status}."
+                )
+                st.rerun()
+            except (CompCoachError, ConcurrentUpdateError, ValueError) as exc:
+                show_error(exc)
+
+    for status, title in (("absent", "Absent"), ("withdrawn", "Withdrawn")):
+        rows = status_rows[status]
+        if not rows:
+            continue
+        with st.expander(f"{title} · {len(rows)}", expanded=False):
+            for athlete in rows:
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{esc(athlete['name'])}** · {esc(athlete_location(athlete))}"
+                    )
+                    if st.button(
+                        "Restore",
+                        width="stretch",
+                        disabled=event["status"] != "open" or not actor,
+                        key=f"restore_attendance_{athlete['id']}_{athlete['version']}",
+                    ):
+                        try:
+                            db.restore_athlete_participation(
+                                event["id"],
+                                athlete["id"],
+                                actor,
+                                expected_version=athlete["version"],
+                            )
+                            st.toast(f"{athlete['name']} restored.")
+                            st.rerun()
+                        except (
+                            CompCoachError,
+                            ConcurrentUpdateError,
+                            ValueError,
+                        ) as exc:
+                            show_error(exc)
+
+
+def render_pool_wave_control(event: dict, actor: str) -> list[dict]:
+    """Show the current Pool wave and allow an Admin to activate another."""
+
+    waves = db.list_pool_waves(event["id"])
+    if not waves:
+        return []
+    active_index = next(
+        (index for index, wave in enumerate(waves) if wave.get("is_active")),
+        0,
+    )
+    current = waves[active_index]
+    with st.expander("Pool wave control", expanded=True):
+        st.success(f"Current wave · {current['label']}")
+        st.caption(
+            "Only the current timed wave appears on live coach screens. Athletes without a time stay visible."
+        )
+        for index, wave in enumerate(waves):
+            if wave.get("is_active"):
+                continue
+            state = "Scheduled" if index > active_index else "Inactive"
+            with st.container(border=True):
+                st.markdown(f"**{state} · {esc(wave['label'])}**")
+                if st.button(
+                    "Activate this wave",
+                    type="primary" if state == "Scheduled" else "secondary",
+                    width="stretch",
+                    disabled=event["status"] != "open" or not actor,
+                    key=f"activate_wave_{event['id']}_{wave['wave_key']}",
+                ):
+                    try:
+                        db.activate_pool_wave(
+                            event["id"],
+                            wave["wave_key"],
+                            actor,
+                            expected_version=wave["version"],
+                        )
+                        st.toast(f"{wave['label']} is now the current wave.")
+                        st.rerun()
+                    except (
+                        CompCoachError,
+                        ConcurrentUpdateError,
+                        ValueError,
+                    ) as exc:
+                        show_error(exc)
+    return waves
+
+
 def render_assignments(event: dict, actor: str) -> None:
     st.subheader("Coach assignments")
-    athletes = [a for a in db.list_athletes(event["id"]) if a["active_state"] == "active"]
-    if not athletes:
+    all_athletes = db.list_athletes(event["id"])
+    if not all_athletes:
         st.info("Import athletes first.")
         return
     phase_label = select_nav(["Pools", "Direct Elimination"], f"assignment_phase_{event['id']}")
     phase = "pools" if phase_label == "Pools" else "de"
+    render_attendance_control(event, phase, all_athletes, actor)
+    athletes = [a for a in all_athletes if is_operational_athlete(a)]
     visible = [a for a in athletes if a["phase"] == phase]
+    if phase == "pools":
+        waves = render_pool_wave_control(event, actor)
+        if waves:
+            wave_labels = [str(wave["label"]) for wave in waves]
+            wave_filter = st.selectbox(
+                "Start time to assign",
+                ["All start times", *wave_labels],
+                key=f"assignment_wave_filter_{event['id']}",
+            )
+            if wave_filter != "All start times":
+                selected_key = pool_wave_label_key(wave_filter)
+                visible = [
+                    athlete
+                    for athlete in visible
+                    if pool_wave_label_key(athlete.get("time_text")) == selected_key
+                ]
     if not visible:
-        st.info(f"No {phase_label} athletes imported yet.")
+        st.info(f"No participating {phase_label.lower()} athletes match this view.")
         return
 
+    meet_id = str(event.get("meet_id") or event["id"])
+    meet_events, meet_athletes, _ = load_meet_context(meet_id)
+    pod_assignments = [
+        assignment
+        for child in meet_events
+        for assignment in db.list_pod_assignments(child["id"])
+    ]
+    coach_options, used_coaches = order_coaches_by_assignment_usage(
+        list(event["active_coaches"]), meet_athletes, pod_assignments
+    )
+
+    def coach_format(coach: str) -> str:
+        return coach_assignment_option(coach, used_coaches)
+
     if phase == "de":
-        pods = sorted({a["pod"] for a in visible if a["pod"]})
+        pods = sorted(
+            {a["pod"] for a in visible if a["pod"]}, key=natural_sort_key
+        )
         with st.expander("Assign an entire pod", expanded=True):
             if not pods:
                 st.caption("No pod can be derived yet. Import a list containing values such as M1 or P3.")
             else:
                 with st.form(f"pod_assign_{event['id']}"):
                     pod = st.selectbox("Pod", pods)
-                    main = st.selectbox("Main coach", ["None", *event["active_coaches"]], key="pod_main")
-                    side = st.selectbox("Side coach", ["None", *event["active_coaches"]], key="pod_side")
+                    main = st.selectbox(
+                        "Main coach",
+                        ["None", *coach_options],
+                        format_func=coach_format,
+                        key="pod_main",
+                    )
+                    side = st.selectbox(
+                        "Side coach",
+                        ["None", *coach_options],
+                        format_func=coach_format,
+                        key="pod_side",
+                    )
                     submit = st.form_submit_button("Assign pod", width="stretch")
                 if submit:
                     if main == side and main != "None":
@@ -1275,8 +1757,14 @@ def render_assignments(event: dict, actor: str) -> None:
                         except CompCoachError as exc:
                             show_error(exc)
 
-    unassigned = [a for a in visible if not has_assignment(a)]
-    assigned = [a for a in visible if has_assignment(a)]
+    unassigned = sorted(
+        (a for a in visible if not has_assignment(a)),
+        key=assignment_athlete_sort_key,
+    )
+    assigned = sorted(
+        (a for a in visible if has_assignment(a)),
+        key=assignment_athlete_sort_key,
+    )
     ordered = [*unassigned, *assigned]
 
     with st.expander("Assign selected athletes", expanded=phase == "pools"):
@@ -1294,12 +1782,14 @@ def render_assignments(event: dict, actor: str) -> None:
         )
         main = st.selectbox(
             "Main coach",
-            ["No change", "None", *event["active_coaches"]],
+            ["No change", "None", *coach_options],
+            format_func=coach_format,
             key=f"main_{event['id']}_{phase}",
         )
         side = st.selectbox(
             "Side coach",
-            ["No change", "None", *event["active_coaches"]],
+            ["No change", "None", *coach_options],
+            format_func=coach_format,
             key=f"side_{event['id']}_{phase}",
         )
         if st.button(
@@ -1357,7 +1847,7 @@ def render_assignments(event: dict, actor: str) -> None:
 
 def render_quick_update(event: dict, role: str, actor: str) -> None:
     _, athletes, _ = load_meet_context(event["id"])
-    active = [a for a in athletes if a["active_state"] == "active"]
+    active = operational_view_athletes(athletes)
     with st.expander("➕ Report athlete location", expanded=role == "coordinator"):
         if not actor:
             st.warning("Choose your name before sending an update.")
@@ -1504,8 +1994,9 @@ def render_pool_result_editor(event: dict, actor: str, athlete: dict) -> None:
 
 
 def render_help_alerts(event: dict, role: str, actor: str, athletes: list[dict]) -> None:
+    operational = operational_view_athletes(athletes)
     alerts = sorted(
-        [athlete for athlete in athletes if athlete.get("help_requested_at")],
+        [athlete for athlete in operational if athlete.get("help_requested_at")],
         key=lambda athlete: (
             bool(athlete.get("help_acknowledged_by")),
             athlete.get("help_requested_at") or "",
@@ -1594,6 +2085,7 @@ def render_athlete_card(
     athlete: dict,
     *,
     personal: bool = False,
+    allow_operational_actions: bool = True,
 ) -> None:
     status = athlete["call_status"]
     icon = CALL_ICONS.get(status, "⚪")
@@ -1652,6 +2144,9 @@ def render_athlete_card(
                 f"{esc(last_note)}</div>",
                 unsafe_allow_html=True,
             )
+
+        if not allow_operational_actions:
+            return
 
         writable = event["status"] == "open" and bool(actor)
         if athlete["active_state"] == "eliminated":
@@ -1811,8 +2306,8 @@ def render_athlete_card(
 
 def render_live_board(event: dict, role: str, actor: str) -> None:
     _, athletes, event_by_id = load_meet_context(event["id"])
-    active = [a for a in athletes if a["active_state"] == "active"]
-    out = [a for a in athletes if a["active_state"] == "eliminated"]
+    active = operational_view_athletes(athletes)
+    out = [a for a in athletes if is_competitive_out(a)]
     needs = [a for a in active if a["call_status"] != "waiting" and not a["covered_by"]]
     stale_needs = [a for a in needs if is_stale(a)]
     current_needs = [a for a in needs if not is_stale(a)]
@@ -1824,23 +2319,23 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
         f"{len(waiting)} waiting · {len(out)} out</div>",
         unsafe_allow_html=True,
     )
-    views = ["Needs", "Covered", "Waiting", "Out"]
+    views = ["Needs Coach", "Covered Now", "No Current Call", "Out"]
     view = select_nav(views, f"live_view_{event['id']}_{role}")
     mapping = {
-        "Needs": sorted(needs, key=call_sort_key),
-        "Covered": sorted(covered, key=call_sort_key),
-        "Waiting": waiting,
+        "Needs Coach": sorted(needs, key=call_sort_key),
+        "Covered Now": sorted(covered, key=call_sort_key),
+        "No Current Call": waiting,
         "Out": out,
     }
     selected = mapping[view]
     if not selected:
         empty_messages = {
-            "Needs": "No athlete currently needs coverage.",
-            "Covered": "No athlete is currently covered.",
-            "Waiting": "No active athletes are waiting.",
+            "Needs Coach": "No athlete currently needs coverage.",
+            "Covered Now": "No athlete is currently covered.",
+            "No Current Call": "Every active athlete currently has a live call.",
             "Out": "No athletes have been marked out.",
         }
-        if view == "Needs":
+        if view == "Needs Coach":
             st.success(empty_messages[view])
         else:
             st.info(empty_messages[view])
@@ -1865,10 +2360,10 @@ def personal_athlete_sort_key(athlete: dict) -> tuple:
         athlete.get("active_state") != "active",
         call_priority,
         phase_priority,
-        athlete.get("time_text") or "ZZZ",
-        athlete.get("pod") or "ZZZ",
-        athlete_location(athlete),
-        athlete.get("name") or "",
+        natural_sort_key(athlete.get("time_text") or "ZZZ"),
+        natural_sort_key(athlete.get("pod") or "ZZZ"),
+        natural_sort_key(athlete_location(athlete)),
+        natural_sort_key(athlete.get("name") or ""),
     )
 
 
@@ -1889,8 +2384,111 @@ def personal_event_priority(event_id: str, rows: list[dict], actor: str) -> tupl
     return (min(priorities, default=9),)
 
 
+def render_availability_control(
+    event: dict,
+    actor: str,
+    athletes: list[dict],
+    *,
+    compact: bool = False,
+) -> None:
+    """Render the current coach's explicit, meet-wide availability control."""
+
+    if actor not in event["active_coaches"]:
+        return
+    statuses = {
+        row["coach_name"]: row for row in db.list_coach_availability(event["id"])
+    }
+    status = statuses.get(
+        actor,
+        {
+            "coach_name": actor,
+            "is_available": False,
+            "available_since": None,
+            "version": 0,
+        },
+    )
+    workload = coach_workload(athletes, actor)
+    unfinished = int(workload["unfinished_count"])
+    available = bool(status.get("is_available"))
+    since = age_text(status.get("available_since"))
+    state_class = " cc-availability-on" if available else ""
+    if available:
+        state = "🟢 Available to help"
+        meta = f"Declared {since}" if since else "Declared available"
+    elif unfinished:
+        state = "⚪ Not marked available"
+        meta = f"The board still shows {unfinished} active dut{'y' if unfinished == 1 else 'ies'}."
+    else:
+        state = "⚪ Ready when you are"
+        meta = "No unfinished duty is visible. Availability is never declared automatically."
+    st.markdown(
+        f"<div class='cc-availability{state_class}'>"
+        f"<div class='cc-availability-title'>{state}</div>"
+        f"<div class='cc-availability-meta'>{esc(meta)}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    writable = event["status"] == "open"
+    if available:
+        if st.button(
+            "I’m no longer available",
+            key=f"availability_off_{event['id']}_{safe_key(actor)}",
+            width="stretch",
+            disabled=not writable,
+        ):
+            try:
+                db.set_coach_availability(
+                    event["id"],
+                    actor,
+                    False,
+                    actor,
+                    expected_version=int(status.get("version") or 0),
+                )
+                st.toast("Availability removed.")
+                st.rerun()
+            except (CompCoachError, ConcurrentUpdateError, ValueError) as exc:
+                show_error(exc)
+        return
+
+    confirmed = not unfinished
+    if unfinished:
+        if not compact:
+            st.warning(
+                "Your data still shows active work. Mark yourself available only "
+                "if the field situation has already changed."
+            )
+        confirmed = st.checkbox(
+            f"I confirm I am free despite {unfinished} active "
+            f"dut{'y' if unfinished == 1 else 'ies'}",
+            key=(
+                f"availability_override_{event['id']}_{safe_key(actor)}_"
+                f"{int(status.get('version') or 0)}"
+            ),
+        )
+    if st.button(
+        "I’m available to help",
+        type="primary",
+        key=f"availability_on_{event['id']}_{safe_key(actor)}",
+        width="stretch",
+        disabled=not writable or not confirmed,
+    ):
+        try:
+            db.set_coach_availability(
+                event["id"],
+                actor,
+                True,
+                actor,
+                expected_version=int(status.get("version") or 0),
+            )
+            st.toast("You are now visible as available to help.")
+            st.rerun()
+        except (CompCoachError, ConcurrentUpdateError, ValueError) as exc:
+            show_error(exc)
+
+
 def render_my_group(event: dict, role: str, actor: str) -> None:
     events, athletes, event_by_id = load_meet_context(event["id"])
+    operational_ids = {row["id"] for row in operational_view_athletes(athletes)}
     planned = [
         athlete
         for athlete in athletes
@@ -1903,21 +2501,45 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
         and actor in {athlete.get("covered_by"), athlete.get("help_acknowledged_by")}
     ]
     mine = [*planned, *temporary]
-    active_mine = [row for row in mine if row["active_state"] == "active"]
-    out_mine = [row for row in mine if row["active_state"] == "eliminated"]
-    main_count = sum(row.get("main_coach") == actor for row in planned)
-    side_count = sum(row.get("side_coach") == actor for row in planned)
+    participating_mine = [row for row in mine if is_operational_athlete(row)]
+    active_mine = [
+        row
+        for row in participating_mine
+        if row["id"] in operational_ids
+    ]
+    completed_pools = [
+        row
+        for row in participating_mine
+        if row.get("phase") == "pools"
+        and row.get("pool_wins") is not None
+        and row.get("pool_losses") is not None
+    ]
+    completed_pool_ids = {row["id"] for row in completed_pools}
+    working_mine = [
+        row for row in active_mine if row["id"] not in completed_pool_ids
+    ]
+    out_mine = [row for row in mine if is_competitive_out(row)]
+    main_count = sum(row.get("main_coach") == actor for row in working_mine)
+    side_count = sum(row.get("side_coach") == actor for row in working_mine)
+    temporary_count = sum(row in temporary for row in working_mine)
 
     st.markdown("### My group")
+    render_availability_control(event, actor, athletes)
+    completed_label = (
+        "1 completed pool"
+        if len(completed_pools) == 1
+        else f"{len(completed_pools)} completed pools"
+    )
     st.caption(
-        f"{len(active_mine)} active · {main_count} Main · {side_count} Side"
-        + (f" · {len(temporary)} temporary" if temporary else "")
+        f"{len(working_mine)} active work · {completed_label}"
+        f" · {main_count} Main · {side_count} Side"
+        + (f" · {temporary_count} temporary" if temporary_count else "")
     )
     if not mine:
         st.info("No athletes are assigned to you right now. Team Plan still shows the full staff plan.")
         return
 
-    visible_event_ids = {row["event_id"] for row in mine}
+    visible_event_ids = {row["event_id"] for row in working_mine}
     ordered_events = sorted(
         [child for child in events if child["id"] in visible_event_ids],
         key=lambda child: (
@@ -1934,7 +2556,7 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
 
     for child in ordered_events:
         child_rows = sorted(
-            [row for row in active_mine if row["event_id"] == child["id"]],
+            [row for row in working_mine if row["event_id"] == child["id"]],
             key=personal_athlete_sort_key,
         )
         st.markdown(f"#### ⭐ {esc(child['name'])}")
@@ -1962,6 +2584,38 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
                     athlete,
                     personal=True,
                 )
+
+    if completed_pools:
+        completed_event_ids = {row["event_id"] for row in completed_pools}
+        completed_events = [
+            child for child in events if child["id"] in completed_event_ids
+        ]
+        with st.expander(
+            f"Completed pool results · {len(completed_pools)}", expanded=False
+        ):
+            st.caption(
+                "Finished pool entries stay editable here and no longer crowd "
+                "the active coaching list."
+            )
+            for child in completed_events:
+                st.markdown(f"**{esc(child['name'])}**")
+                child_completed = sorted(
+                    [
+                        row
+                        for row in completed_pools
+                        if row["event_id"] == child["id"]
+                    ],
+                    key=personal_athlete_sort_key,
+                )
+                for athlete in child_completed:
+                    render_athlete_card(
+                        event_by_id[athlete["event_id"]],
+                        role,
+                        actor,
+                        athlete,
+                        personal=True,
+                        allow_operational_actions=False,
+                    )
 
     if out_mine:
         with st.expander(f"Completed / Out · {len(out_mine)}", expanded=False):
@@ -2011,10 +2665,11 @@ def plan_group_html(coach: str, main_rows: list[dict], side_rows: list[dict]) ->
     )
 
 
-def render_team_plan(event: dict, actor: str) -> None:
+def render_team_plan(event: dict, actor: str, *, show_heading: bool = True) -> None:
     events, athletes, _ = load_meet_context(event["id"])
-    active = [row for row in athletes if row["active_state"] == "active"]
-    st.markdown("### Team plan")
+    active = operational_view_athletes(athletes)
+    if show_heading:
+        st.markdown("### Team plan")
     st.caption("All current assignments · 🔹 Main · 🔸 Side")
     if not active:
         st.info("No active athletes have been imported yet.")
@@ -2074,11 +2729,420 @@ def render_team_plan(event: dict, actor: str) -> None:
                             unsafe_allow_html=True,
                         )
             out_count = sum(
-                row["event_id"] == child["id"] and row["active_state"] == "eliminated"
+                row["event_id"] == child["id"] and is_competitive_out(row)
                 for row in athletes
             )
             if out_count:
                 st.caption(f"{out_count} completed/out athlete(s) are hidden from the active plan.")
+
+
+def render_coach_availability_summary(
+    event: dict,
+    role: str,
+    actor: str,
+    athletes: list[dict],
+) -> list[dict]:
+    statuses = db.list_coach_availability(event["id"])
+    if not statuses:
+        st.info("No active coaches are configured for this competition day.")
+        return []
+
+    chips = []
+    contradictions = []
+    for status in statuses:
+        coach = str(status["coach_name"])
+        workload = coach_workload(athletes, coach)
+        unfinished = int(workload["unfinished_count"])
+        if status.get("is_available"):
+            elapsed = age_text(status.get("available_since"))
+            suffix = f" · {elapsed}" if elapsed else ""
+            chips.append(
+                f"<span class='cc-coach-chip cc-coach-chip-on'>🟢 {esc(coach)}{esc(suffix)}</span>"
+            )
+            if unfinished:
+                contradictions.append(f"{coach} ({unfinished} active)")
+        else:
+            suffix = f" · {unfinished} active" if unfinished else ""
+            chips.append(
+                f"<span class='cc-coach-chip'>⚪ {esc(coach)}{esc(suffix)}</span>"
+            )
+    st.markdown(
+        "<div class='cc-coach-chips'>" + "".join(chips) + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Availability is declared manually; it does not mean the coach is online.")
+    if contradictions:
+        st.warning(
+            "Marked available but still connected to active work: "
+            + ", ".join(contradictions)
+            + ". Verify before deploying."
+        )
+
+    available = [row for row in statuses if row.get("is_available")]
+    if role in {"admin", "coordinator"} and available and event["status"] == "open":
+        with st.expander("Manage available coaches", expanded=False):
+            by_name = {str(row["coach_name"]): row for row in available}
+            selected = st.selectbox(
+                "Coach",
+                list(by_name),
+                key=f"availability_manage_{event['id']}_{role}",
+            )
+            if st.button(
+                "Mark coach no longer available",
+                key=f"availability_manager_off_{event['id']}_{role}",
+                width="stretch",
+            ):
+                status = by_name[selected]
+                try:
+                    db.set_coach_availability(
+                        event["id"],
+                        selected,
+                        False,
+                        actor,
+                        expected_version=int(status.get("version") or 0),
+                    )
+                    st.toast(f"{selected} is no longer marked available.")
+                    st.rerun()
+                except (CompCoachError, ConcurrentUpdateError, ValueError) as exc:
+                    show_error(exc)
+    return statuses
+
+
+def render_available_coach_deploy(
+    event: dict,
+    role: str,
+    actor: str,
+    events: list[dict],
+    athletes: list[dict],
+    statuses: list[dict],
+) -> None:
+    if role not in {"admin", "coordinator"} or event["status"] != "open":
+        return
+    available = [row for row in statuses if row.get("is_available")]
+    if not available:
+        st.info("No coach is currently marked available to help.")
+        return
+
+    eligible_by_event: dict[str, list[dict]] = {}
+    for child in events:
+        rows = [
+            row
+            for row in athletes
+            if row["event_id"] == child["id"]
+            and row["phase"] == "de"
+            and is_operational_athlete(row)
+            and str(row.get("pod") or "").strip()
+        ]
+        if rows:
+            eligible_by_event[child["id"]] = rows
+    if not eligible_by_event:
+        st.caption("No active DE sector/pod is available for support assignment.")
+        return
+
+    with st.expander("➕ Send an available coach to a DE sector", expanded=False):
+        status_by_name = {str(row["coach_name"]): row for row in available}
+        coach = st.selectbox(
+            "Available coach",
+            list(status_by_name),
+            key=f"deploy_coach_{event['id']}_{role}",
+        )
+        event_by_id = {child["id"]: child for child in events}
+        target_event_id = st.selectbox(
+            "Event",
+            list(eligible_by_event),
+            format_func=lambda child_id: event_by_id[child_id]["name"],
+            key=f"deploy_event_{event['id']}_{role}",
+        )
+        target_rows = eligible_by_event[target_event_id]
+        sectors = sorted(
+            {str(row["pod"]).strip().upper() for row in target_rows},
+            key=natural_sort_key,
+        )
+        sector = st.selectbox(
+            "Sector / Pod",
+            sectors,
+            key=f"deploy_sector_{event['id']}_{role}_{target_event_id}",
+        )
+        sector_rows = [
+            row for row in target_rows if str(row.get("pod") or "").strip().upper() == sector
+        ]
+        existing_sides = sorted(
+            {str(row.get("side_coach") or "").strip() for row in sector_rows} - {""}
+        )
+        replacement_needed = any(name != coach for name in existing_sides)
+        replace_existing = False
+        if replacement_needed:
+            st.warning(
+                "This sector already has Side support: "
+                + ", ".join(existing_sides)
+                + ". Main assignments will remain unchanged."
+            )
+            replace_existing = st.checkbox(
+                "Replace the current Side coach for this sector",
+                key=f"deploy_replace_{event['id']}_{role}_{target_event_id}_{sector}",
+            )
+        st.caption(
+            f"{len(sector_rows)} active athlete(s) · the selected coach becomes Side support."
+        )
+        if st.button(
+            f"Send {coach} to Sector {sector}",
+            type="primary",
+            width="stretch",
+            disabled=replacement_needed and not replace_existing,
+            key=f"deploy_apply_{event['id']}_{role}_{target_event_id}_{sector}",
+        ):
+            status = status_by_name[coach]
+            try:
+                result = db.deploy_available_coach_to_pod(
+                    target_event_id,
+                    pod=sector,
+                    coach=coach,
+                    actor=actor,
+                    expected_availability_version=int(status.get("version") or 0),
+                    replace_existing=replace_existing,
+                )
+                updated = int(result.get("updated") or 0)
+                exceptions = int(result.get("exceptions_kept") or 0)
+                message = f"{coach} sent to Sector {sector} · {updated} athlete(s) updated"
+                if exceptions:
+                    message += f" · {exceptions} individual exception(s) kept"
+                st.toast(message + ".")
+                st.rerun()
+            except (CompCoachError, ConcurrentUpdateError, ValueError) as exc:
+                show_error(exc)
+
+
+def render_de_sector_overview(
+    event: dict,
+    actor: str,
+    events: list[dict],
+    athletes: list[dict],
+) -> None:
+    if not events:
+        st.info("No events have been created yet.")
+        return
+    active_de = [
+        row
+        for row in athletes
+        if row["phase"] == "de" and is_operational_athlete(row)
+    ]
+    actor_event_ids = {
+        row["event_id"]
+        for row in active_de
+        if actor
+        in {
+            row.get("main_coach"),
+            row.get("side_coach"),
+            row.get("covered_by"),
+            row.get("help_acknowledged_by"),
+        }
+    }
+    for index, child in enumerate(events):
+        rows = [row for row in active_de if row["event_id"] == child["id"]]
+        groups: dict[str, list[dict]] = {}
+        for row in rows:
+            groups.setdefault(athlete_sector(row), []).append(row)
+        urgent = sum(
+            row.get("call_status") != "waiting"
+            and not row.get("covered_by")
+            and not is_stale(row)
+            for row in rows
+        )
+        out_de = sum(
+            row["event_id"] == child["id"]
+            and row["phase"] == "de"
+            and is_competitive_out(row)
+            for row in athletes
+        )
+        mine = child["id"] in actor_event_ids
+        label = (
+            f"{'⭐ ' if mine else ''}{child['name']} · {len(rows)} still in DE"
+            + (f" · {urgent} need coach" if urgent else "")
+        )
+        expanded = mine or bool(urgent) or (len(events) == 1 and index == 0)
+        with st.expander(label, expanded=expanded):
+            if not rows:
+                st.caption("No active DE athletes in this event yet.")
+                if out_de:
+                    st.caption(f"{out_de} athlete(s) are Out.")
+                continue
+            ordered_groups = sorted(
+                groups.items(),
+                key=lambda item: (
+                    -int(sector_assignment_summary(item[1])["uncovered_calls"]),
+                    -len(item[1]),
+                    item[0] == "TBD",
+                    natural_sort_key(item[0]),
+                ),
+            )
+            for sector, sector_rows in ordered_groups:
+                summary = sector_assignment_summary(sector_rows)
+                mains = list(summary["mains"])
+                sides = list(summary["sides"])
+                main_text = " / ".join(mains) if mains else "Unassigned"
+                side_text = " / ".join(sides) if sides else "None"
+                flags = []
+                if summary["mixed"]:
+                    flags.append("Mixed assignments")
+                if summary["unassigned"]:
+                    flags.append("Unassigned athlete")
+                if sector == "TBD":
+                    flags.append("Sector unknown")
+                risk_class = " cc-sector-risk" if flags or summary["uncovered_calls"] else ""
+                status_counts = {
+                    status: sum(row.get("call_status") == status for row in sector_rows)
+                    for status in ("now", "on_deck", "in_hole", "waiting")
+                }
+                status_text = " · ".join(
+                    part
+                    for part in (
+                        f"{status_counts['now']} Now" if status_counts["now"] else "",
+                        f"{status_counts['on_deck']} On Deck" if status_counts["on_deck"] else "",
+                        f"{status_counts['in_hole']} In the Hole" if status_counts["in_hole"] else "",
+                        f"{status_counts['waiting']} no call" if status_counts["waiting"] else "",
+                    )
+                    if part
+                )
+                athlete_html = []
+                for row in sorted(sector_rows, key=call_sort_key):
+                    status = str(row.get("call_status") or "waiting")
+                    icon = CALL_ICONS.get(status, "⚪")
+                    label_text = CALL_LABELS.get(status, status)
+                    call_note = "No current call" if status == "waiting" else label_text
+                    if is_stale(row) and status != "waiting":
+                        call_note += " · stale"
+                    coverage = (
+                        f" · Covered now: {esc(row['covered_by'])}"
+                        if row.get("covered_by")
+                        else (
+                            " · <span class='cc-risk'>Needs coach</span>"
+                            if status != "waiting" and not is_stale(row)
+                            else ""
+                        )
+                    )
+                    athlete_html.append(
+                        f"<div class='cc-sector-row'>{icon} <b>{esc(row['name'])}</b> · "
+                        f"{esc(athlete_location(row))} · {esc(call_note)}{coverage}</div>"
+                    )
+                flag_html = (
+                    f"<div class='cc-risk'>⚠ {esc(' · '.join(flags))}</div>" if flags else ""
+                )
+                covered = list(summary["covered"])
+                covered_text = (
+                    f" · Covered now: {esc(' / '.join(covered))}" if covered else ""
+                )
+                st.markdown(
+                    f"<div class='cc-sector{risk_class}'>"
+                    f"<div class='cc-sector-head'><span>Sector {esc(sector)}</span>"
+                    f"<span>{len(sector_rows)} still in</span></div>"
+                    f"<div class='cc-sector-coaches'>🔹 Main: {esc(main_text)} · "
+                    f"🔸 Side: {esc(side_text)}{covered_text}</div>"
+                    f"<div class='cc-meta'>{esc(status_text)}</div>{flag_html}"
+                    f"{''.join(athlete_html)}</div>",
+                    unsafe_allow_html=True,
+                )
+            if out_de:
+                st.caption(f"{out_de} DE athlete(s) are Out and hidden from sector load.")
+
+
+def render_pool_results_summary(events: list[dict], athletes: list[dict]) -> None:
+    st.caption(
+        "Recorded pool summaries only. This list does not infer advancement or final placement."
+    )
+    if not events:
+        st.info("No events have been created yet.")
+        return
+    for index, child in enumerate(events):
+        child_rows = [row for row in athletes if row["event_id"] == child["id"]]
+        child_operational_ids = {
+            row["id"] for row in operational_view_athletes(child_rows)
+        }
+        recorded = [
+            row
+            for row in child_rows
+            if row.get("pool_wins") is not None and row.get("pool_losses") is not None
+        ]
+        awaiting = [
+            row
+            for row in child_rows
+            if row["phase"] == "pools"
+            and row["id"] in child_operational_ids
+            and (row.get("pool_wins") is None or row.get("pool_losses") is None)
+        ]
+        label = f"{child['name']} · {len(recorded)} results entered"
+        if awaiting:
+            label += f" · {len(awaiting)} awaiting"
+        with st.expander(label, expanded=len(events) == 1 and index == 0):
+            if not recorded:
+                st.caption("No pool W/L summaries have been recorded yet.")
+            else:
+                ordered = sorted(
+                    recorded,
+                    key=lambda row: (
+                        -int(row["pool_wins"]),
+                        int(row["pool_losses"]),
+                        str(row["name"]),
+                    ),
+                )
+                rows_html = []
+                for row in ordered:
+                    state = " · Out" if is_competitive_out(row) else ""
+                    rows_html.append(
+                        f"<div class='cc-pool-row'><span><b>{esc(row['name'])}</b>"
+                        f"{esc(state)}</span><span class='cc-pool-score'>"
+                        f"{int(row['pool_wins'])} W · {int(row['pool_losses'])} L</span></div>"
+                    )
+                st.markdown("".join(rows_html), unsafe_allow_html=True)
+            if awaiting:
+                st.caption(
+                    "Awaiting result: " + ", ".join(row["name"] for row in awaiting)
+                )
+
+
+def render_situation(event: dict, role: str, actor: str) -> None:
+    events, athletes, _ = load_meet_context(event["id"])
+    active = operational_view_athletes(athletes)
+    active_de = [row for row in active if row["phase"] == "de"]
+    fresh_needs = [
+        row
+        for row in active
+        if row["call_status"] != "waiting" and not row["covered_by"] and not is_stale(row)
+    ]
+    stale_calls = [
+        row
+        for row in active
+        if row["call_status"] != "waiting" and not row["covered_by"] and is_stale(row)
+    ]
+    statuses = db.list_coach_availability(event["id"])
+    available_count = sum(bool(row.get("is_available")) for row in statuses)
+
+    st.markdown("### Situation")
+    st.markdown(
+        f"<div class='cc-summary'><span class='cc-now'>{len(fresh_needs)} need coach</span> · "
+        f"<span class='cc-covered'>{available_count} coach{'es' if available_count != 1 else ''} available</span> · "
+        f"{len(active_de)} still in DE · {len(stale_calls)} stale call{'s' if len(stale_calls) != 1 else ''}</div>",
+        unsafe_allow_html=True,
+    )
+    view = select_nav(
+        ["Now", "Assignments", "Pool Results"],
+        f"situation_view_{event['id']}_{role}",
+    )
+    if view == "Assignments":
+        render_team_plan(event, actor, show_heading=False)
+        return
+    if view == "Pool Results":
+        render_pool_results_summary(events, athletes)
+        return
+
+    st.markdown("#### Coach availability")
+    if role == "coordinator" and actor in event["active_coaches"]:
+        render_availability_control(event, actor, athletes, compact=True)
+    statuses = render_coach_availability_summary(event, role, actor, athletes)
+    render_available_coach_deploy(event, role, actor, events, athletes, statuses)
+    st.markdown("#### DE sector load")
+    render_de_sector_overview(event, actor, events, athletes)
+    synced_at = datetime.now(ZoneInfo(event["timezone"])).strftime("%I:%M:%S %p").lstrip("0")
+    st.caption(f"Last synced {synced_at} · refreshes automatically")
 
 
 def rollover_actor(event: dict, role: str) -> str:
@@ -2096,14 +3160,28 @@ def lifecycle_fragment(meet_id: str, role: str, archived_view: bool) -> None:
     if not current:
         st.rerun(scope="app")
         return
-    if not current.get("ended_at"):
-        return
 
     intentional_admin_archive = role == "admin" and query_value("archive") == "1"
     if intentional_admin_archive:
         return
 
+    # Any valid Coach/Coordinator link for this competition follows the one
+    # day currently activated by Admin. This also covers days prepared in
+    # advance through Schedule rather than only the legacy successor chain.
+    if role != "admin" and current.get("competition_id"):
+        active_day = db.get_active_competition_day(current["competition_id"])
+        if active_day and active_day["id"] != current["id"]:
+            actor = rollover_actor(current, role)
+            clear_actor_state(meet_id, role)
+            set_open_event(active_day, role, actor=actor)
+            return
+
+    if not current.get("ended_at"):
+        return
+
     successor = db.get_latest_prepared_successor(meet_id)
+    if not successor and current.get("competition_id"):
+        successor = db.get_active_competition_day(current["competition_id"])
     if successor:
         actor = rollover_actor(current, role)
         clear_actor_state(meet_id, role)
@@ -2154,6 +3232,13 @@ def team_plan_fragment(event_id: str, actor: str) -> None:
         render_team_plan(event, actor)
 
 
+@st.fragment(run_every=5)
+def situation_fragment(event_id: str, role: str, actor: str) -> None:
+    event = db.get_meet(event_id)
+    if event:
+        render_situation(event, role, actor)
+
+
 def render_live(event: dict, role: str, actor: str) -> None:
     render_quick_update(event, role, actor)
     live_fragment(event["id"], role, actor)
@@ -2168,11 +3253,7 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
         "",
     ]
     for child in db.list_meet_events(event["id"]):
-        athletes = [
-            athlete
-            for athlete in db.list_athletes(child["id"])
-            if athlete["active_state"] == "active"
-        ]
+        athletes = operational_view_athletes(db.list_athletes(child["id"]))
         lines.extend([f"📍 *{child['name'].upper()}*", ""])
         if not athletes:
             lines.extend(["No active athletes yet.", ""])
@@ -2185,15 +3266,19 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
             if phase == "pools":
                 phase_rows.sort(
                     key=lambda a: (
-                        a["time_text"] or "ZZZ",
-                        a["pod"],
-                        a["source_strip"],
-                        a["name"],
+                        natural_sort_key(a["time_text"] or "ZZZ"),
+                        natural_sort_key(a["pod"]),
+                        natural_sort_key(a["source_strip"]),
+                        natural_sort_key(a["name"]),
                     )
                 )
             else:
                 phase_rows.sort(
-                    key=lambda a: (a["pod"] or "ZZZ", a["source_strip"], a["name"])
+                    key=lambda a: (
+                        natural_sort_key(a["pod"] or "ZZZ"),
+                        natural_sort_key(a["source_strip"]),
+                        natural_sort_key(a["name"]),
+                    )
                 )
             for coach in event["active_coaches"]:
                 main_rows = [row for row in phase_rows if row["main_coach"] == coach]
@@ -2310,6 +3395,7 @@ ACTION_LABELS = {
     "restore": "restored athlete",
     "assignment": "changed assignment",
     "pod_assignment": "changed pod assignment",
+    "sector_support": "sent Side support to a sector",
     "pool_result": "saved pool result",
     "phase_started": "started a phase",
     "phase_reset": "reset a phase to not started",
@@ -2372,7 +3458,7 @@ def render_activity(event: dict, actor: str, role: str) -> None:
                 and bool(action.get("athlete_id"))
                 and action.get("previous") is not None
                 and not action.get("undone_at")
-                and action["action"] not in {"undo", "pod_assignment"}
+                and action["action"] not in {"undo", "pod_assignment", "sector_support"}
                 and (role == "admin" or action["action"] in COORDINATOR_UNDO_ACTIONS)
             )
             if can_undo and st.button("Undo", key=f"undo_action_{action['id']}", width="stretch"):
@@ -2468,9 +3554,10 @@ def suggested_next_day(event: dict) -> tuple[str, date]:
 
 def meet_operational_summary(meet_id: str) -> tuple[list[dict], int, int, int]:
     events, athletes, _ = load_meet_context(meet_id)
-    active = sum(row["active_state"] == "active" for row in athletes)
-    out = sum(row["active_state"] == "eliminated" for row in athletes)
-    unresolved_help = sum(bool(row.get("help_requested_at")) for row in athletes)
+    operational = operational_view_athletes(athletes)
+    active = len(operational)
+    out = sum(is_competitive_out(row) for row in athletes)
+    unresolved_help = sum(bool(row.get("help_requested_at")) for row in operational)
     return events, active, out, unresolved_help
 
 
@@ -2598,7 +3685,7 @@ def render_competition_day(event: dict, actor: str) -> None:
 
 
 def render_settings(event: dict, actor: str) -> None:
-    st.subheader("Competition settings")
+    st.subheader("Competition day settings")
     all_people = list(dict.fromkeys([*DEFAULT_COORDINATORS, *DEFAULT_COACHES, *event["coordinators"], *event["active_coaches"]]))
     with st.form(f"settings_{event['id']}"):
         name = st.text_input(
@@ -2692,6 +3779,74 @@ def render_settings(event: dict, actor: str) -> None:
                     show_error(exc)
 
 
+def render_settings_hub(event: dict, actor: str) -> None:
+    """Keep the expanded admin setup usable on a narrow phone screen."""
+
+    section = select_nav(
+        ["Day", "Competition", "Coaches", "Schedule"],
+        f"settings_section_{event['id']}",
+    )
+    if section == "Day":
+        render_settings(event, actor)
+    elif section == "Competition":
+        render_competition_profile(db, event, actor)
+    elif section == "Coaches":
+        render_coach_management(db, event, actor)
+    else:
+        def open_day(selected: dict) -> None:
+            selected_day = dict(selected)
+            set_open_event(
+                selected_day,
+                actor=actor,
+                archive=bool(selected_day.get("ended_at")),
+            )
+
+        render_competition_schedule(
+            db,
+            event,
+            actor,
+            open_day_callback=open_day,
+        )
+
+
+def render_admin_setup(event: dict, actor: str, *, scheduled_day: bool = False) -> None:
+    """Render setup tools, including safe pre-work for a future day."""
+
+    options = ["Import", "Assign", "Events", "Settings"]
+    if not scheduled_day:
+        options.insert(3, "Activity")
+    setup = select_nav(options, f"admin_setup_nav_{event['id']}")
+    if setup in {"Import", "Assign"}:
+        events = db.list_meet_events(event["id"])
+        if not events:
+            st.info(
+                "No events yet. Create an event in Setup → Events before "
+                "importing or assigning athletes."
+            )
+            return
+        by_id = {child["id"]: child for child in events}
+        child_id = st.selectbox(
+            "Event to manage",
+            list(by_id),
+            format_func=lambda selected: by_id[selected]["name"],
+            key=f"setup_event_{event['id']}",
+        )
+        st.markdown(
+            f"<span class='cc-event-tag'>{esc(by_id[child_id]['name'])}</span>",
+            unsafe_allow_html=True,
+        )
+        if setup == "Import":
+            render_import(by_id[child_id], actor)
+        else:
+            render_assignments(by_id[child_id], actor)
+    elif setup == "Events":
+        render_event_management(event)
+    elif setup == "Activity":
+        render_activity(event, actor, "admin")
+    else:
+        render_settings_hub(event, actor)
+
+
 def render_event(event: dict, role: str) -> None:
     archived_view = bool(event.get("ended_at"))
     lifecycle_fragment(event["id"], role, archived_view)
@@ -2705,83 +3860,84 @@ def render_event(event: dict, role: str) -> None:
         return
 
     render_header(event, role)
+    scheduled_day = event.get("day_status") == "scheduled"
+    if scheduled_day and role != "admin":
+        st.subheader("🗓️ Competition day not active yet")
+        st.info(
+            "This day is still being prepared. The page checks automatically "
+            "and will open the live board after an Admin activates it."
+        )
+        return
+
     actor = require_actor(event, role)
     if not actor:
         return
+    if scheduled_day:
+        st.warning(
+            "Future-day setup · only Admin can see this page. Imports and coach "
+            "assignments are saved now but stay out of the active competition board."
+        )
+        active_day = (
+            db.get_active_competition_day(event["competition_id"])
+            if event.get("competition_id")
+            else None
+        )
+        if (
+            active_day
+            and active_day["id"] != event["id"]
+            and st.button(
+                "← Back to active day",
+                type="primary",
+                width="stretch",
+                key=f"back_to_active_{event['id']}",
+            )
+        ):
+            set_open_event(active_day, actor=actor)
+        render_admin_setup(event, actor, scheduled_day=True)
+        return
+
     phase_fragment(event["id"], role, actor)
     help_fragment(event["id"], role, actor)
 
     if role == "admin":
         nav = select_nav(
-            ["My Group", "Live", "Team Plan", "Setup", "Share"],
+            ["My Group", "Live", "Situation", "Setup", "Share"],
             f"admin_nav_{event['id']}",
         )
         if nav == "My Group":
-            render_quick_update(event, role, actor)
             my_group_fragment(event["id"], role, actor)
+            render_quick_update(event, role, actor)
         elif nav == "Live":
             render_live(event, role, actor)
-        elif nav == "Team Plan":
-            team_plan_fragment(event["id"], actor)
+        elif nav == "Situation":
+            situation_fragment(event["id"], role, actor)
         elif nav == "Share":
             render_share(event)
         else:
-            setup = select_nav(
-                ["Import", "Assign", "Events", "Activity", "Settings"],
-                f"admin_setup_nav_{event['id']}",
-            )
-            if setup in {"Import", "Assign"}:
-                events = db.list_meet_events(event["id"])
-                if not events:
-                    st.info(
-                        "No events yet. Create an event in Setup → Events before "
-                        "importing or assigning athletes."
-                    )
-                    return
-                by_id = {child["id"]: child for child in events}
-                child_id = st.selectbox(
-                    "Event to manage",
-                    list(by_id),
-                    format_func=lambda selected: by_id[selected]["name"],
-                    key=f"setup_event_{event['id']}",
-                )
-                st.markdown(
-                    f"<span class='cc-event-tag'>{esc(by_id[child_id]['name'])}</span>",
-                    unsafe_allow_html=True,
-                )
-                if setup == "Import":
-                    render_import(by_id[child_id], actor)
-                else:
-                    render_assignments(by_id[child_id], actor)
-            elif setup == "Events":
-                render_event_management(event)
-            elif setup == "Activity":
-                render_activity(event, actor, role)
-            else:
-                render_settings(event, actor)
+            render_admin_setup(event, actor)
     elif role == "coordinator":
         nav = select_nav(
-            ["Live", "Team Plan", "Activity"],
+            ["Situation", "Live", "Activity"],
             f"coordinator_nav_{event['id']}",
         )
-        if nav == "Live":
+        if nav == "Situation":
+            situation_fragment(event["id"], role, actor)
+        elif nav == "Live":
             render_live(event, role, actor)
-        elif nav == "Team Plan":
-            team_plan_fragment(event["id"], actor)
         else:
             render_activity(event, actor, role)
     else:
         nav = select_nav(
-            ["My Group", "Live", "Team Plan"],
+            ["My Group", "Live", "Situation"],
             f"coach_nav_{event['id']}",
         )
         if nav == "My Group":
-            render_quick_update(event, role, actor)
             my_group_fragment(event["id"], role, actor)
+            render_quick_update(event, role, actor)
         elif nav == "Live":
             render_live(event, role, actor)
         else:
-            team_plan_fragment(event["id"], actor)
+            situation_fragment(event["id"], role, actor)
 
 
 def main() -> None:

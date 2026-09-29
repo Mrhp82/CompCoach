@@ -59,6 +59,23 @@ def _load(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _normalize_name(value: str) -> str:
+    """Return the stable key used by the persistent coach directory."""
+
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _validated_date(value: str, *, label: str, allow_blank: bool = True) -> str:
+    clean = str(value or "").strip()
+    if not clean and allow_blank:
+        return ""
+    try:
+        date.fromisoformat(clean)
+    except ValueError as exc:
+        raise ValueError(f"{label} must use YYYY-MM-DD.") from exc
+    return clean
+
+
 EVENT_MUTABLE_FIELDS = {
     "name",
     "timezone",
@@ -79,6 +96,7 @@ ATHLETE_MUTABLE_FIELDS = {
     "side_coach",
     "assignment_override",
     "active_state",
+    "participation_status",
     "call_status",
     "live_location",
     "reported_at",
@@ -144,8 +162,22 @@ class CompCoachDB:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS competitions (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    location TEXT NOT NULL DEFAULT '',
+                    start_date TEXT NOT NULL DEFAULT '',
+                    end_date TEXT NOT NULL DEFAULT '',
+                    timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+                    logo_path TEXT NOT NULL DEFAULT '',
+                    strip_map_path TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS meets (
                     id TEXT PRIMARY KEY,
+                    competition_id TEXT REFERENCES competitions(id) ON DELETE SET NULL,
                     name TEXT NOT NULL,
                     timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
                     status TEXT NOT NULL DEFAULT 'open'
@@ -159,6 +191,8 @@ class CompCoachDB:
                     ended_by TEXT NOT NULL DEFAULT '',
                     prepared_from_meet_id TEXT REFERENCES meets(id) ON DELETE SET NULL,
                     competition_date TEXT NOT NULL DEFAULT '',
+                    day_status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (day_status IN ('scheduled', 'active', 'closed')),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -187,6 +221,8 @@ class CompCoachDB:
                     assignment_override INTEGER NOT NULL DEFAULT 0,
                     active_state TEXT NOT NULL DEFAULT 'active'
                         CHECK (active_state IN ('active', 'eliminated')),
+                    participation_status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (participation_status IN ('active', 'absent', 'withdrawn')),
                     call_status TEXT NOT NULL DEFAULT 'waiting'
                         CHECK (call_status IN ('waiting', 'in_hole', 'on_deck', 'now')),
                     live_location TEXT NOT NULL DEFAULT '',
@@ -233,6 +269,90 @@ class CompCoachDB:
                     PRIMARY KEY(event_id, phase)
                 );
 
+                CREATE TABLE IF NOT EXISTS pool_waves (
+                    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    wave_key TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_active IN (0, 1)),
+                    is_visible INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_visible IN (0, 1)),
+                    activated_at TEXT,
+                    activated_by TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(event_id, wave_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS coach_availability (
+                    meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+                    coach_name TEXT NOT NULL,
+                    is_available INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_available IN (0, 1)),
+                    available_since TEXT,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(meet_id, coach_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS coaches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL UNIQUE,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                        CHECK (is_active IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS competition_coaches (
+                    competition_id TEXT NOT NULL
+                        REFERENCES competitions(id) ON DELETE CASCADE,
+                    coach_id TEXT NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+                    role TEXT NOT NULL DEFAULT 'coach'
+                        CHECK (role IN ('coach', 'coordinator', 'admin')),
+                    added_at TEXT NOT NULL,
+                    PRIMARY KEY(competition_id, coach_id, role)
+                );
+
+                CREATE TABLE IF NOT EXISTS day_coach_presence (
+                    meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+                    coach_id TEXT NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+                    presence_status TEXT NOT NULL DEFAULT 'scheduled'
+                        CHECK (presence_status IN ('scheduled', 'present', 'absent')),
+                    home_event_id TEXT REFERENCES events(id) ON DELETE SET NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(meet_id, coach_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS coach_assignment_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    competition_id TEXT REFERENCES competitions(id) ON DELETE SET NULL,
+                    meet_id TEXT REFERENCES meets(id) ON DELETE SET NULL,
+                    event_id TEXT REFERENCES events(id) ON DELETE SET NULL,
+                    athlete_id TEXT REFERENCES athletes(id) ON DELETE SET NULL,
+                    coach_id TEXT REFERENCES coaches(id) ON DELETE SET NULL,
+                    coach_name TEXT NOT NULL,
+                    assignment_kind TEXT NOT NULL
+                        CHECK (assignment_kind IN ('main', 'side', 'coverage')),
+                    target_type TEXT NOT NULL
+                        CHECK (target_type IN ('athlete', 'pod')),
+                    phase TEXT NOT NULL DEFAULT '',
+                    pod TEXT NOT NULL DEFAULT '',
+                    home_event_id TEXT REFERENCES events(id) ON DELETE SET NULL,
+                    is_cross_event INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_cross_event IN (0, 1)),
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    assigned_by TEXT NOT NULL DEFAULT '',
+                    ended_by TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -253,6 +373,23 @@ class CompCoachDB:
                     ON actions(event_id, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_meet_events_order
                     ON meet_events(meet_id, sort_order);
+                CREATE INDEX IF NOT EXISTS idx_coach_availability_meet
+                    ON coach_availability(meet_id, is_available);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_pool_wave
+                    ON pool_waves(event_id) WHERE is_active = 1;
+                CREATE INDEX IF NOT EXISTS idx_pool_waves_order
+                    ON pool_waves(event_id, sort_order, wave_key);
+                CREATE INDEX IF NOT EXISTS idx_competition_coaches
+                    ON competition_coaches(competition_id, role);
+                CREATE INDEX IF NOT EXISTS idx_day_coach_presence
+                    ON day_coach_presence(meet_id, presence_status);
+                CREATE INDEX IF NOT EXISTS idx_assignment_history_athlete
+                    ON coach_assignment_history(athlete_id, started_at, id);
+                CREATE INDEX IF NOT EXISTS idx_assignment_history_coach
+                    ON coach_assignment_history(coach_id, coach_name, started_at, id);
+                CREATE INDEX IF NOT EXISTS idx_assignment_history_open
+                    ON coach_assignment_history(event_id, target_type, assignment_kind)
+                    WHERE ended_at IS NULL;
                 """
             )
             # In-place migration for databases created by an earlier build.
@@ -262,6 +399,7 @@ class CompCoachDB:
             }
             migrations = {
                 "assignment_override": "INTEGER NOT NULL DEFAULT 0",
+                "participation_status": "TEXT NOT NULL DEFAULT 'active'",
                 "pool_wins": "INTEGER",
                 "pool_losses": "INTEGER",
                 "pool_result_at": "TEXT",
@@ -297,10 +435,20 @@ class CompCoachDB:
                     "TEXT REFERENCES meets(id) ON DELETE SET NULL"
                 ),
                 "competition_date": "TEXT NOT NULL DEFAULT ''",
+                "competition_id": (
+                    "TEXT REFERENCES competitions(id) ON DELETE SET NULL"
+                ),
+                "day_status": "TEXT NOT NULL DEFAULT 'active'",
             }
             for column, definition in meet_migrations.items():
                 if column not in meet_columns:
                     conn.execute(f"ALTER TABLE meets ADD COLUMN {column} {definition}")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_meets_competition_day
+                ON meets(competition_id, competition_date)
+                """
+            )
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_meets_prepared_from
@@ -353,6 +501,249 @@ class CompCoachDB:
                         """,
                         (meet_id, event["id"]),
                     )
+
+                # Promote every legacy meet to a day under a durable parent
+                # competition. Prepared day chains remain grouped together.
+                meet_rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM meets ORDER BY created_at, id"
+                    ).fetchall()
+                ]
+                by_id = {str(row["id"]): row for row in meet_rows}
+
+                def root_meet_id(meet: dict[str, Any]) -> str:
+                    current = meet
+                    visited: set[str] = set()
+                    while current.get("prepared_from_meet_id"):
+                        current_id = str(current["id"])
+                        if current_id in visited:
+                            break
+                        visited.add(current_id)
+                        parent = by_id.get(str(current["prepared_from_meet_id"]))
+                        if parent is None:
+                            break
+                        current = parent
+                    return str(current["id"])
+
+                grouped: dict[str, list[dict[str, Any]]] = {}
+                for meet in meet_rows:
+                    grouped.setdefault(root_meet_id(meet), []).append(meet)
+
+                for root_id, days in grouped.items():
+                    competition_id = next(
+                        (
+                            str(day["competition_id"])
+                            for day in days
+                            if day.get("competition_id")
+                        ),
+                        "",
+                    )
+                    if not competition_id:
+                        root = by_id[root_id]
+                        competition_id = uuid4().hex
+                        dated_days = sorted(
+                            str(day.get("competition_date") or "")
+                            for day in days
+                            if str(day.get("competition_date") or "")
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO competitions (
+                                id, name, location, start_date, end_date,
+                                timezone, logo_path, strip_map_path,
+                                created_at, updated_at
+                            ) VALUES (?, ?, '', ?, ?, ?, '', '', ?, ?)
+                            """,
+                            (
+                                competition_id,
+                                root["name"],
+                                dated_days[0] if dated_days else "",
+                                dated_days[-1] if dated_days else "",
+                                root["timezone"],
+                                root["created_at"],
+                                max(str(day["updated_at"]) for day in days),
+                            ),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE meets SET competition_id = ?
+                        WHERE id IN ({}) AND competition_id IS NULL
+                        """.format(",".join("?" for _ in days)),
+                        (competition_id, *(str(day["id"]) for day in days)),
+                    )
+
+                if "day_status" not in meet_columns:
+                    conn.execute(
+                        """
+                        UPDATE meets
+                        SET day_status = CASE
+                            WHEN status = 'locked' OR ended_at IS NOT NULL
+                                THEN 'closed'
+                            ELSE 'active'
+                        END
+                        """
+                    )
+
+                # A competition has one operational day. If a legacy database
+                # drifted into multiple open days, retain the newest as active
+                # and keep earlier open days editable as scheduled.
+                competition_rows = conn.execute(
+                    "SELECT id FROM competitions"
+                ).fetchall()
+                for competition in competition_rows:
+                    active_days = conn.execute(
+                        """
+                        SELECT id FROM meets
+                        WHERE competition_id = ? AND day_status = 'active'
+                        ORDER BY competition_date DESC, created_at DESC, id DESC
+                        """,
+                        (competition["id"],),
+                    ).fetchall()
+                    for extra in active_days[1:]:
+                        conn.execute(
+                            "UPDATE meets SET day_status = 'scheduled' WHERE id = ?",
+                            (extra["id"],),
+                        )
+
+                # Populate the durable coach directory and retain the legacy
+                # JSON lists as a compatibility projection for the current UI.
+                for meet in conn.execute("SELECT * FROM meets").fetchall():
+                    competition_id = str(meet["competition_id"] or "")
+                    coach_names = [
+                        str(value).strip()
+                        for value in _load(meet["active_coaches_json"], [])
+                        if str(value).strip()
+                    ]
+                    coordinator_names = {
+                        str(value).strip()
+                        for value in _load(meet["coordinators_json"], [])
+                        if str(value).strip()
+                    }
+                    for coach_name in dict.fromkeys(
+                        [*coach_names, *coordinator_names]
+                    ):
+                        normalized = _normalize_name(coach_name)
+                        coach = conn.execute(
+                            "SELECT id FROM coaches WHERE normalized_name = ?",
+                            (normalized,),
+                        ).fetchone()
+                        if coach is None:
+                            coach_id = uuid4().hex
+                            conn.execute(
+                                """
+                                INSERT INTO coaches (
+                                    id, name, normalized_name, is_active,
+                                    created_at, updated_at
+                                ) VALUES (?, ?, ?, 1, ?, ?)
+                                """,
+                                (
+                                    coach_id,
+                                    coach_name,
+                                    normalized,
+                                    meet["created_at"],
+                                    meet["updated_at"],
+                                ),
+                            )
+                        else:
+                            coach_id = str(coach["id"])
+                        roles = ["coach"]
+                        if coach_name in coordinator_names:
+                            roles.append("coordinator")
+                        for role in roles:
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO competition_coaches (
+                                    competition_id, coach_id, role, added_at
+                                ) VALUES (?, ?, ?, ?)
+                                """,
+                                (
+                                    competition_id,
+                                    coach_id,
+                                    role,
+                                    meet["created_at"],
+                                ),
+                            )
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO day_coach_presence (
+                                meet_id, coach_id, presence_status,
+                                home_event_id, updated_at, updated_by
+                            ) VALUES (?, ?, 'present', NULL, ?, 'Migration')
+                            """,
+                            (meet["id"], coach_id, meet["updated_at"]),
+                        )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_day_per_competition
+                ON meets(competition_id) WHERE day_status = 'active'
+                """
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for athlete_row in conn.execute(
+                    "SELECT * FROM athletes ORDER BY created_at, id"
+                ).fetchall():
+                    if conn.execute(
+                        """
+                        SELECT 1 FROM coach_assignment_history
+                        WHERE athlete_id = ? LIMIT 1
+                        """,
+                        (athlete_row["id"],),
+                    ).fetchone():
+                        continue
+                    self._sync_athlete_assignment_history(
+                        conn,
+                        current=None,
+                        new=dict(athlete_row),
+                        actor="Migration",
+                        source="legacy_snapshot",
+                    )
+                for pod_row in conn.execute(
+                    "SELECT * FROM pod_assignments ORDER BY event_id, phase, pod"
+                ).fetchall():
+                    if conn.execute(
+                        """
+                        SELECT 1 FROM coach_assignment_history
+                        WHERE event_id = ? AND target_type = 'pod'
+                          AND phase = ? AND pod = ? LIMIT 1
+                        """,
+                        (pod_row["event_id"], pod_row["phase"], pod_row["pod"]),
+                    ).fetchone():
+                        continue
+                    for kind in ("main", "side"):
+                        self._sync_assignment_slot(
+                            conn,
+                            event_id=str(pod_row["event_id"]),
+                            athlete_id=None,
+                            target_type="pod",
+                            assignment_kind=kind,
+                            coach_name=str(pod_row[f"{kind}_coach"] or ""),
+                            phase=str(pod_row["phase"]),
+                            pod=str(pod_row["pod"]),
+                            actor="Migration",
+                            source="legacy_snapshot",
+                        )
+                conn.execute(
+                    """
+                    UPDATE coach_assignment_history
+                    SET ended_at = COALESCE(
+                            (SELECT meets.ended_at FROM meets
+                             WHERE meets.id = coach_assignment_history.meet_id),
+                            (SELECT meets.updated_at FROM meets
+                             WHERE meets.id = coach_assignment_history.meet_id)
+                        ),
+                        ended_by = 'Migration'
+                    WHERE ended_at IS NULL AND meet_id IN (
+                        SELECT id FROM meets WHERE day_status = 'closed'
+                    )
+                    """
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -377,8 +768,327 @@ class CompCoachDB:
         return data
 
     @staticmethod
+    def _competition_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _coach_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        data = dict(row)
+        if "is_active" in data:
+            data["is_active"] = bool(data["is_active"])
+        if "is_present" in data:
+            data["is_present"] = bool(data["is_present"])
+        if "is_cross_event" in data:
+            data["is_cross_event"] = bool(data["is_cross_event"])
+        return data
+
+    @staticmethod
     def _athlete_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _ensure_coach_record(
+        conn: sqlite3.Connection,
+        name: str,
+        *,
+        now: str | None = None,
+    ) -> sqlite3.Row:
+        clean_name = " ".join(str(name or "").split())
+        if not clean_name:
+            raise ValueError("Coach name is required.")
+        normalized = _normalize_name(clean_name)
+        row = conn.execute(
+            "SELECT * FROM coaches WHERE normalized_name = ?", (normalized,)
+        ).fetchone()
+        if row is not None:
+            return row
+        timestamp = now or utc_now()
+        coach_id = uuid4().hex
+        conn.execute(
+            """
+            INSERT INTO coaches (
+                id, name, normalized_name, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, ?, ?)
+            """,
+            (coach_id, clean_name, normalized, timestamp, timestamp),
+        )
+        return conn.execute(
+            "SELECT * FROM coaches WHERE id = ?", (coach_id,)
+        ).fetchone()
+
+    @classmethod
+    def _sync_staff_records(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        meet_id: str,
+        competition_id: str,
+        coaches: Iterable[str],
+        coordinators: Iterable[str],
+        actor: str,
+        replace_day: bool = False,
+    ) -> None:
+        now = utc_now()
+        clean_coaches = list(
+            dict.fromkeys(
+                " ".join(str(name or "").split())
+                for name in coaches
+                if str(name or "").strip()
+            )
+        )
+        clean_coordinators = list(
+            dict.fromkeys(
+                " ".join(str(name or "").split())
+                for name in coordinators
+                if str(name or "").strip()
+            )
+        )
+        coach_ids: list[str] = []
+        for name in dict.fromkeys([*clean_coaches, *clean_coordinators]):
+            coach = cls._ensure_coach_record(conn, name, now=now)
+            coach_id = str(coach["id"])
+            coach_ids.append(coach_id)
+            roles = ["coach"]
+            if name in clean_coordinators:
+                roles.append("coordinator")
+            for role in roles:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO competition_coaches (
+                        competition_id, coach_id, role, added_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (competition_id, coach_id, role, now),
+                )
+            conn.execute(
+                """
+                INSERT INTO day_coach_presence (
+                    meet_id, coach_id, presence_status, home_event_id,
+                    updated_at, updated_by
+                ) VALUES (?, ?, 'present', NULL, ?, ?)
+                ON CONFLICT(meet_id, coach_id) DO UPDATE SET
+                    presence_status = CASE
+                        WHEN day_coach_presence.presence_status = 'absent'
+                            THEN 'absent'
+                        ELSE 'present'
+                    END,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by
+                """,
+                (meet_id, coach_id, now, actor or "System"),
+            )
+        if replace_day:
+            if coach_ids:
+                placeholders = ",".join("?" for _ in coach_ids)
+                conn.execute(
+                    f"""
+                    DELETE FROM day_coach_presence
+                    WHERE meet_id = ? AND coach_id NOT IN ({placeholders})
+                    """,
+                    (meet_id, *coach_ids),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM day_coach_presence WHERE meet_id = ?", (meet_id,)
+                )
+
+    @classmethod
+    def _assignment_context(
+        cls,
+        conn: sqlite3.Connection,
+        event_id: str,
+        coach_name: str,
+        *,
+        now: str,
+    ) -> tuple[str, str, str, str | None, int]:
+        membership = conn.execute(
+            """
+            SELECT meets.id AS meet_id, meets.competition_id
+            FROM meet_events
+            JOIN meets ON meets.id = meet_events.meet_id
+            WHERE meet_events.event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        if membership is None:
+            raise CompCoachError("Competition group not found.")
+        coach = cls._ensure_coach_record(conn, coach_name, now=now)
+        coach_id = str(coach["id"])
+        competition_id = str(membership["competition_id"] or "")
+        if competition_id:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO competition_coaches (
+                    competition_id, coach_id, role, added_at
+                ) VALUES (?, ?, 'coach', ?)
+                """,
+                (competition_id, coach_id, now),
+            )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO day_coach_presence (
+                meet_id, coach_id, presence_status, home_event_id,
+                updated_at, updated_by
+            ) VALUES (?, ?, 'present', NULL, ?, 'Assignment')
+            """,
+            (membership["meet_id"], coach_id, now),
+        )
+        presence = conn.execute(
+            """
+            SELECT home_event_id FROM day_coach_presence
+            WHERE meet_id = ? AND coach_id = ?
+            """,
+            (membership["meet_id"], coach_id),
+        ).fetchone()
+        home_event_id = (
+            str(presence["home_event_id"])
+            if presence is not None and presence["home_event_id"]
+            else None
+        )
+        is_cross_event = int(bool(home_event_id and home_event_id != event_id))
+        return (
+            coach_id,
+            str(membership["meet_id"]),
+            competition_id,
+            home_event_id,
+            is_cross_event,
+        )
+
+    @classmethod
+    def _sync_assignment_slot(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        event_id: str,
+        athlete_id: str | None,
+        target_type: str,
+        assignment_kind: str,
+        coach_name: str,
+        phase: str,
+        pod: str,
+        actor: str,
+        source: str,
+    ) -> None:
+        """Close/open one assignment interval without deleting history."""
+
+        now = utc_now()
+        if target_type == "athlete":
+            open_rows = conn.execute(
+                """
+                SELECT * FROM coach_assignment_history
+                WHERE event_id = ? AND athlete_id = ?
+                  AND target_type = 'athlete' AND assignment_kind = ?
+                  AND ended_at IS NULL
+                ORDER BY id
+                """,
+                (event_id, athlete_id, assignment_kind),
+            ).fetchall()
+        else:
+            open_rows = conn.execute(
+                """
+                SELECT * FROM coach_assignment_history
+                WHERE event_id = ? AND target_type = 'pod'
+                  AND phase = ? AND pod = ? AND assignment_kind = ?
+                  AND ended_at IS NULL
+                ORDER BY id
+                """,
+                (event_id, phase, pod, assignment_kind),
+            ).fetchall()
+
+        clean_name = " ".join(str(coach_name or "").split())
+        unchanged = len(open_rows) == 1 and (
+            _normalize_name(str(open_rows[0]["coach_name"]))
+            == _normalize_name(clean_name)
+            and str(open_rows[0]["phase"] or "") == phase
+            and str(open_rows[0]["pod"] or "") == pod
+        )
+        if unchanged:
+            return
+        if open_rows:
+            conn.executemany(
+                """
+                UPDATE coach_assignment_history
+                SET ended_at = ?, ended_by = ?
+                WHERE id = ? AND ended_at IS NULL
+                """,
+                [(now, actor or "System", row["id"]) for row in open_rows],
+            )
+        if not clean_name:
+            return
+
+        coach_id, meet_id, competition_id, home_event_id, is_cross_event = (
+            cls._assignment_context(
+                conn, event_id, clean_name, now=now
+            )
+        )
+        conn.execute(
+            """
+            INSERT INTO coach_assignment_history (
+                competition_id, meet_id, event_id, athlete_id, coach_id,
+                coach_name, assignment_kind, target_type, phase, pod,
+                home_event_id, is_cross_event, started_at, assigned_by, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                competition_id or None,
+                meet_id,
+                event_id,
+                athlete_id,
+                coach_id,
+                clean_name,
+                assignment_kind,
+                target_type,
+                phase,
+                pod,
+                home_event_id,
+                is_cross_event,
+                now,
+                actor or "System",
+                source,
+            ),
+        )
+
+    @classmethod
+    def _sync_athlete_assignment_history(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        current: Mapping[str, Any] | None,
+        new: Mapping[str, Any],
+        actor: str,
+        source: str,
+    ) -> None:
+        event_id = str(new["event_id"])
+        athlete_id = str(new["id"])
+        phase = str(new.get("phase") or "")
+        pod = str(new.get("pod") or "")
+        for field, kind in (
+            ("main_coach", "main"),
+            ("side_coach", "side"),
+            ("covered_by", "coverage"),
+        ):
+            old_value = str((current or {}).get(field) or "")
+            new_value = str(new.get(field) or "")
+            context_changed = bool(current) and (
+                str(current.get("phase") or "") != phase
+                or str(current.get("pod") or "") != pod
+            )
+            if old_value == new_value and not context_changed:
+                continue
+            cls._sync_assignment_slot(
+                conn,
+                event_id=event_id,
+                athlete_id=athlete_id,
+                target_type="athlete",
+                assignment_kind=kind,
+                coach_name=new_value,
+                phase=phase,
+                pod=pod,
+                actor=actor,
+                source=source,
+            )
 
     def _assert_open(self, conn: sqlite3.Connection, event_id: str) -> None:
         row = conn.execute(
@@ -403,6 +1113,101 @@ class CompCoachDB:
         if row["status"] == "locked":
             raise EventLockedError("This competition group is locked and is now read-only.")
         return row
+
+    @staticmethod
+    def _meet_for_event(
+        conn: sqlite3.Connection, event_id: str
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            """
+            SELECT meets.*
+            FROM meets
+            JOIN meet_events ON meet_events.meet_id = meets.id
+            WHERE meet_events.event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            raise CompCoachError("Competition group not found.")
+        return row
+
+    @staticmethod
+    def _clear_available_coaches(
+        conn: sqlite3.Connection,
+        meet_id: str,
+        coaches: Iterable[str],
+        actor: str,
+    ) -> None:
+        """Mark explicitly available coaches engaged inside the caller's transaction."""
+
+        names = list(
+            dict.fromkeys(
+                str(coach or "").strip()
+                for coach in coaches
+                if str(coach or "").strip()
+            )
+        )
+        meet = conn.execute(
+            "SELECT active_coaches_json FROM meets WHERE id = ?", (meet_id,)
+        ).fetchone()
+        if meet is None:
+            raise CompCoachError("Competition group not found.")
+        active_coaches = {
+            str(coach).strip()
+            for coach in _load(meet["active_coaches_json"], [])
+            if str(coach).strip()
+        }
+        names = [coach for coach in names if coach in active_coaches]
+        if not names:
+            return
+        now = utc_now()
+        clean_actor = str(actor or "System").strip() or "System"
+        for coach in names:
+            # Advance the version even when no row exists or the coach was
+            # already engaged.  This invalidates an "I'm available" tap from
+            # a phone that loaded before the new assignment was made.
+            conn.execute(
+                """
+                INSERT INTO coach_availability (
+                    meet_id, coach_name, is_available, available_since,
+                    updated_at, updated_by, version
+                ) VALUES (?, ?, 0, NULL, ?, ?, 1)
+                ON CONFLICT(meet_id, coach_name) DO UPDATE SET
+                    is_available = 0,
+                    available_since = NULL,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by,
+                    version = coach_availability.version + 1
+                """,
+                (meet_id, coach, now, clean_actor),
+            )
+
+    @staticmethod
+    def _delete_removed_coach_availability(
+        conn: sqlite3.Connection,
+        meet_id: str,
+        active_coaches: Iterable[str],
+    ) -> None:
+        names = list(
+            dict.fromkeys(
+                str(coach or "").strip()
+                for coach in active_coaches
+                if str(coach or "").strip()
+            )
+        )
+        if not names:
+            conn.execute(
+                "DELETE FROM coach_availability WHERE meet_id = ?", (meet_id,)
+            )
+            return
+        placeholders = ", ".join("?" for _ in names)
+        conn.execute(
+            f"""
+            DELETE FROM coach_availability
+            WHERE meet_id = ? AND coach_name NOT IN ({placeholders})
+            """,
+            (meet_id, *names),
+        )
 
     def _log_action(
         self,
@@ -436,6 +1241,157 @@ class CompCoachDB:
         )
         return int(cursor.lastrowid)
 
+    def create_competition(
+        self,
+        name: str,
+        *,
+        location: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        timezone_name: str = "America/Los_Angeles",
+        logo_path: str = "",
+        strip_map_path: str = "",
+    ) -> dict[str, Any]:
+        """Create a season-level competition parent without creating a day."""
+
+        clean_name = str(name or "").strip() or "AFM Competition"
+        clean_start = _validated_date(start_date, label="Start date")
+        clean_end = _validated_date(end_date, label="End date")
+        if clean_start and clean_end and clean_end < clean_start:
+            raise ValueError("End date cannot be before start date.")
+        competition_id = uuid4().hex
+        now = utc_now()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO competitions (
+                    id, name, location, start_date, end_date, timezone,
+                    logo_path, strip_map_path, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    competition_id,
+                    clean_name,
+                    str(location or "").strip(),
+                    clean_start,
+                    clean_end,
+                    str(timezone_name or "").strip() or "America/Los_Angeles",
+                    str(logo_path or "").strip(),
+                    str(strip_map_path or "").strip(),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_competition(competition_id)  # type: ignore[return-value]
+
+    def list_competitions(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT competitions.*,
+                       (SELECT COUNT(*) FROM meets
+                        WHERE meets.competition_id = competitions.id) AS day_count
+                FROM competitions
+                ORDER BY start_date DESC, created_at DESC, id DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_competition(self, competition_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT competitions.*,
+                       (SELECT COUNT(*) FROM meets
+                        WHERE meets.competition_id = competitions.id) AS day_count
+                FROM competitions WHERE id = ?
+                """,
+                (competition_id,),
+            ).fetchone()
+        return self._competition_dict(row)
+
+    def update_competition(
+        self,
+        competition_id: str,
+        *,
+        name: str,
+        location: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        timezone_name: str = "America/Los_Angeles",
+        logo_path: str = "",
+        strip_map_path: str = "",
+    ) -> dict[str, Any]:
+        clean_name = str(name or "").strip() or "AFM Competition"
+        clean_start = _validated_date(start_date, label="Start date")
+        clean_end = _validated_date(end_date, label="End date")
+        if clean_start and clean_end and clean_end < clean_start:
+            raise ValueError("End date cannot be before start date.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute(
+                "SELECT 1 FROM competitions WHERE id = ?", (competition_id,)
+            ).fetchone():
+                raise CompCoachError("Competition not found.")
+            now = utc_now()
+            timezone_value = (
+                str(timezone_name or "").strip() or "America/Los_Angeles"
+            )
+            conn.execute(
+                """
+                UPDATE competitions SET
+                    name = ?, location = ?, start_date = ?, end_date = ?,
+                    timezone = ?, logo_path = ?, strip_map_path = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_name,
+                    str(location or "").strip(),
+                    clean_start,
+                    clean_end,
+                    timezone_value,
+                    str(logo_path or "").strip(),
+                    str(strip_map_path or "").strip(),
+                    now,
+                    competition_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE meets SET timezone = ?, updated_at = ? WHERE competition_id = ?",
+                (timezone_value, now, competition_id),
+            )
+            conn.execute(
+                """
+                UPDATE events SET timezone = ?, updated_at = ?
+                WHERE id IN (
+                    SELECT meet_events.event_id FROM meet_events
+                    JOIN meets ON meets.id = meet_events.meet_id
+                    WHERE meets.competition_id = ?
+                )
+                """,
+                (timezone_value, now, competition_id),
+            )
+            conn.commit()
+        return self.get_competition(competition_id)  # type: ignore[return-value]
+
+    def list_competition_days(self, competition_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM competitions WHERE id = ?", (competition_id,)
+            ).fetchone():
+                raise CompCoachError("Competition not found.")
+            rows = conn.execute(
+                """
+                SELECT meets.*,
+                       (SELECT COUNT(*) FROM meet_events
+                        WHERE meet_events.meet_id = meets.id) AS event_count
+                FROM meets WHERE competition_id = ?
+                ORDER BY competition_date, created_at, id
+                """,
+                (competition_id,),
+            ).fetchall()
+        return [self._meet_dict(row) for row in rows if row is not None]  # type: ignore[misc]
+
     def create_event(
         self,
         name: str,
@@ -451,8 +1407,19 @@ class CompCoachDB:
         coordinator_token = _new_token()
         coach_token = _new_token()
         meet_id = uuid4().hex
+        competition_id = uuid4().hex
+        competition_name = name.strip() or "AFM Competition"
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO competitions (
+                    id, name, location, start_date, end_date, timezone,
+                    logo_path, strip_map_path, created_at, updated_at
+                ) VALUES (?, ?, '', '', '', ?, '', '', ?, ?)
+                """,
+                (competition_id, competition_name, timezone_name, now, now),
+            )
             conn.execute(
                 """
                 INSERT INTO events (
@@ -476,14 +1443,15 @@ class CompCoachDB:
             conn.execute(
                 """
                 INSERT INTO meets (
-                    id, name, timezone, status, active_coaches_json,
+                    id, competition_id, name, timezone, status, active_coaches_json,
                     coordinators_json, admin_token, coordinator_token,
-                    coach_token, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
+                    coach_token, day_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, 'active', ?, ?)
                 """,
                 (
                     meet_id,
-                    name.strip() or "AFM Competition",
+                    competition_id,
+                    competition_name,
                     timezone_name,
                     _dump(coaches),
                     _dump(coords),
@@ -497,6 +1465,14 @@ class CompCoachDB:
             conn.execute(
                 "INSERT INTO meet_events (meet_id, event_id, sort_order) VALUES (?, ?, 0)",
                 (meet_id, event_id),
+            )
+            self._sync_staff_records(
+                conn,
+                meet_id=meet_id,
+                competition_id=competition_id,
+                coaches=coaches,
+                coordinators=coords,
+                actor="Create event",
             )
             conn.commit()
         return self.get_event(event_id)  # type: ignore[return-value]
@@ -535,6 +1511,11 @@ class CompCoachDB:
         *,
         first_event_name: str | None = "Main Event",
         competition_date: str = "",
+        competition_id: str | None = None,
+        day_status: str = "active",
+        location: str = "",
+        logo_path: str = "",
+        strip_map_path: str = "",
     ) -> dict[str, Any]:
         """Create a shared competition group, optionally without a first event.
 
@@ -550,33 +1531,78 @@ class CompCoachDB:
             if first_event_name is None
             else str(first_event_name).strip() or "Main Event"
         )
-        clean_date = str(competition_date or "").strip()
-        if clean_date:
-            try:
-                date.fromisoformat(clean_date)
-            except ValueError as exc:
-                raise ValueError("Competition date must use YYYY-MM-DD.") from exc
+        clean_date = _validated_date(competition_date, label="Competition date")
+        clean_day_status = str(day_status or "").strip().lower()
+        if clean_day_status not in {"scheduled", "active", "closed"}:
+            raise ValueError("Day status must be scheduled, active, or closed.")
+        if clean_day_status == "closed":
+            raise ValueError("A new competition day cannot start closed.")
         coaches = [str(x).strip() for x in active_coaches if str(x).strip()]
         coords = [str(x).strip() for x in coordinators if str(x).strip()]
         meet_tokens = (_new_token(), _new_token(), _new_token())
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            resolved_competition_id = str(competition_id or "").strip()
+            if resolved_competition_id:
+                parent = conn.execute(
+                    "SELECT * FROM competitions WHERE id = ?",
+                    (resolved_competition_id,),
+                ).fetchone()
+                if parent is None:
+                    raise CompCoachError("Competition not found.")
+                if clean_day_status == "active" and conn.execute(
+                    """
+                    SELECT 1 FROM meets
+                    WHERE competition_id = ? AND day_status = 'active'
+                    """,
+                    (resolved_competition_id,),
+                ).fetchone():
+                    raise CompCoachError(
+                        "This competition already has an active day. "
+                        "Create the new day as scheduled."
+                    )
+                timezone_value = str(parent["timezone"] or timezone_name)
+            else:
+                resolved_competition_id = uuid4().hex
+                timezone_value = timezone_name
+                conn.execute(
+                    """
+                    INSERT INTO competitions (
+                        id, name, location, start_date, end_date, timezone,
+                        logo_path, strip_map_path, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_competition_id,
+                        meet_name,
+                        str(location or "").strip(),
+                        clean_date,
+                        clean_date,
+                        timezone_value,
+                        str(logo_path or "").strip(),
+                        str(strip_map_path or "").strip(),
+                        now,
+                        now,
+                    ),
+                )
             conn.execute(
                 """
                 INSERT INTO meets (
-                    id, name, timezone, status, active_coaches_json,
+                    id, competition_id, name, timezone, status, active_coaches_json,
                     coordinators_json, admin_token, coordinator_token,
-                    coach_token, competition_date, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+                    coach_token, competition_date, day_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meet_id,
+                    resolved_competition_id,
                     meet_name,
-                    timezone_name,
+                    timezone_value,
                     _dump(coaches),
                     _dump(coords),
                     *meet_tokens,
                     clean_date,
+                    clean_day_status,
                     now,
                     now,
                 ),
@@ -595,7 +1621,7 @@ class CompCoachDB:
                     (
                         event_id,
                         child_name,
-                        timezone_name,
+                        timezone_value,
                         _dump(coaches),
                         _dump(coords),
                         *child_tokens,
@@ -610,8 +1636,58 @@ class CompCoachDB:
                     """,
                     (meet_id, event_id),
                 )
+            if competition_id and clean_date:
+                start_date = str(parent["start_date"] or "")
+                end_date = str(parent["end_date"] or "")
+                expanded_start = min(
+                    value for value in (start_date, clean_date) if value
+                )
+                expanded_end = max(
+                    value for value in (end_date, clean_date) if value
+                )
+                conn.execute(
+                    """
+                    UPDATE competitions
+                    SET start_date = ?, end_date = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (expanded_start, expanded_end, now, resolved_competition_id),
+                )
+            self._sync_staff_records(
+                conn,
+                meet_id=meet_id,
+                competition_id=resolved_competition_id,
+                coaches=coaches,
+                coordinators=coords,
+                actor="Create day",
+            )
             conn.commit()
         return self.get_meet(meet_id)  # type: ignore[return-value]
+
+    def create_competition_day(
+        self,
+        competition_id: str,
+        name: str,
+        competition_date: str,
+        active_coaches: Iterable[str],
+        coordinators: Iterable[str] = ("Irina",),
+        *,
+        first_event_name: str | None = None,
+        day_status: str = "scheduled",
+    ) -> dict[str, Any]:
+        parent = self.get_competition(competition_id)
+        if parent is None:
+            raise CompCoachError("Competition not found.")
+        return self.create_meet(
+            name,
+            active_coaches,
+            coordinators,
+            str(parent["timezone"]),
+            first_event_name=first_event_name,
+            competition_date=competition_date,
+            competition_id=competition_id,
+            day_status=day_status,
+        )
 
     def list_meets(self) -> list[dict[str, Any]]:
         with self._connection() as conn:
@@ -964,6 +2040,16 @@ class CompCoachDB:
                     meet_id,
                 ),
             )
+            self._delete_removed_coach_availability(conn, meet_id, coaches)
+            self._sync_staff_records(
+                conn,
+                meet_id=meet_id,
+                competition_id=str(meet["competition_id"] or ""),
+                coaches=coaches,
+                coordinators=coords,
+                actor="Staff update",
+                replace_day=True,
+            )
             conn.commit()
         return self.get_meet(meet_id)  # type: ignore[return-value]
 
@@ -992,6 +2078,75 @@ class CompCoachDB:
             )
             conn.commit()
 
+    def set_day_status(
+        self,
+        meet_id: str,
+        day_status: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Schedule, activate, or close one competition day atomically."""
+
+        clean_status = str(day_status or "").strip().lower()
+        clean_actor = str(actor or "").strip()
+        if clean_status not in {"scheduled", "active", "closed"}:
+            raise ValueError("Day status must be scheduled, active, or closed.")
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        if clean_status == "closed":
+            return self.finish_meet(meet_id, clean_actor)
+
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = conn.execute(
+                "SELECT * FROM meets WHERE id = ?", (meet_id,)
+            ).fetchone()
+            if meet is None:
+                raise CompCoachError("Competition group not found.")
+            if meet["ended_at"] or meet["day_status"] == "closed":
+                raise CompCoachError("A closed competition day cannot be reactivated.")
+            now = utc_now()
+            if clean_status == "active":
+                conn.execute(
+                    """
+                    UPDATE meets SET day_status = 'scheduled', updated_at = ?
+                    WHERE competition_id = ? AND day_status = 'active' AND id != ?
+                    """,
+                    (now, meet["competition_id"], meet_id),
+                )
+            conn.execute(
+                """
+                UPDATE meets SET day_status = ?, status = 'open', updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_status, now, meet_id),
+            )
+            conn.execute(
+                """
+                UPDATE events SET status = 'open', updated_at = ?
+                WHERE id IN (SELECT event_id FROM meet_events WHERE meet_id = ?)
+                """,
+                (now, meet_id),
+            )
+            conn.commit()
+        return self.get_meet(meet_id)  # type: ignore[return-value]
+
+    def get_active_competition_day(
+        self, competition_id: str
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT meets.*,
+                       (SELECT COUNT(*) FROM meet_events
+                        WHERE meet_events.meet_id = meets.id) AS event_count
+                FROM meets
+                WHERE competition_id = ? AND day_status = 'active'
+                LIMIT 1
+                """,
+                (competition_id,),
+            ).fetchone()
+        return self._meet_dict(row)
+
     def finish_meet(self, meet_id: str, actor: str) -> dict[str, Any]:
         """End a competition day and make every child event read-only."""
         clean_actor = str(actor or "").strip()
@@ -1005,7 +2160,10 @@ class CompCoachDB:
             if meet["ended_at"]:
                 # Idempotent retry: retain the original audit metadata while
                 # repairing a status drift, if one ever occurred.
-                conn.execute("UPDATE meets SET status = 'locked' WHERE id = ?", (meet_id,))
+                conn.execute(
+                    "UPDATE meets SET status = 'locked', day_status = 'closed' WHERE id = ?",
+                    (meet_id,),
+                )
                 conn.execute(
                     """
                     UPDATE events SET status = 'locked'
@@ -1022,9 +2180,17 @@ class CompCoachDB:
             conn.execute(
                 """
                 UPDATE meets SET status = 'locked', ended_at = ?, ended_by = ?,
-                    updated_at = ? WHERE id = ?
+                    day_status = 'closed', updated_at = ? WHERE id = ?
                 """,
                 (now, clean_actor, now, meet_id),
+            )
+            conn.execute(
+                """
+                UPDATE coach_assignment_history
+                SET ended_at = ?, ended_by = ?
+                WHERE meet_id = ? AND ended_at IS NULL
+                """,
+                (now, clean_actor, meet_id),
             )
             conn.execute(
                 """
@@ -1082,17 +2248,28 @@ class CompCoachDB:
             now = utc_now()
             if source["ended_at"]:
                 conn.execute(
-                    "UPDATE meets SET status = 'locked' WHERE id = ?",
+                    """
+                    UPDATE meets SET status = 'locked', day_status = 'closed'
+                    WHERE id = ?
+                    """,
                     (source_meet_id,),
                 )
             else:
                 conn.execute(
                     """
                     UPDATE meets SET status = 'locked', ended_at = ?, ended_by = ?,
-                        updated_at = ? WHERE id = ?
+                        day_status = 'closed', updated_at = ? WHERE id = ?
                     """,
                     (now, clean_actor, now, source_meet_id),
                 )
+            conn.execute(
+                """
+                UPDATE coach_assignment_history
+                SET ended_at = ?, ended_by = ?
+                WHERE meet_id = ? AND ended_at IS NULL
+                """,
+                (now, clean_actor, source_meet_id),
+            )
             conn.execute(
                 """
                 UPDATE events SET status = 'locked', updated_at = ?
@@ -1110,14 +2287,15 @@ class CompCoachDB:
             conn.execute(
                 """
                 INSERT INTO meets (
-                    id, name, timezone, status, active_coaches_json,
+                    id, competition_id, name, timezone, status, active_coaches_json,
                     coordinators_json, admin_token, coordinator_token,
                     coach_token, ended_at, ended_by, prepared_from_meet_id,
-                    competition_date, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL, '', ?, ?, ?, ?)
+                    competition_date, day_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL, '', ?, ?, 'active', ?, ?)
                 """,
                 (
                     next_meet_id,
+                    source["competition_id"],
                     clean_name,
                     source["timezone"],
                     source["active_coaches_json"],
@@ -1160,6 +2338,35 @@ class CompCoachDB:
                     VALUES (?, ?, ?)
                     """,
                     (next_meet_id, event_id, sort_order),
+                )
+            self._sync_staff_records(
+                conn,
+                meet_id=next_meet_id,
+                competition_id=str(source["competition_id"] or ""),
+                coaches=_load(source["active_coaches_json"], []),
+                coordinators=_load(source["coordinators_json"], []),
+                actor=clean_actor,
+            )
+            parent = conn.execute(
+                "SELECT start_date, end_date FROM competitions WHERE id = ?",
+                (source["competition_id"],),
+            ).fetchone()
+            if parent is not None:
+                dates = [
+                    value
+                    for value in (
+                        str(parent["start_date"] or ""),
+                        str(parent["end_date"] or ""),
+                        clean_date,
+                    )
+                    if value
+                ]
+                conn.execute(
+                    """
+                    UPDATE competitions SET start_date = ?, end_date = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (min(dates), max(dates), now, source["competition_id"]),
                 )
             conn.commit()
         return self.get_meet(next_meet_id)  # type: ignore[return-value]
@@ -1273,6 +2480,19 @@ class CompCoachDB:
                         now,
                         meet_id,
                     ),
+                )
+                self._delete_removed_coach_availability(conn, meet_id, coaches)
+                competition = conn.execute(
+                    "SELECT competition_id FROM meets WHERE id = ?", (meet_id,)
+                ).fetchone()
+                self._sync_staff_records(
+                    conn,
+                    meet_id=meet_id,
+                    competition_id=str(competition["competition_id"] or ""),
+                    coaches=coaches,
+                    coordinators=coords,
+                    actor="Staff update",
+                    replace_day=True,
                 )
             conn.commit()
         return self.get_event(event_id)  # type: ignore[return-value]
@@ -1478,6 +2698,1322 @@ class CompCoachDB:
             conn.commit()
         return new
 
+    @staticmethod
+    def _pool_wave_sort_key(label: str) -> tuple[int, int, str]:
+        clean = " ".join(str(label or "").split())
+        for pattern in ("%I:%M %p", "%I %p", "%H:%M", "%H%M"):
+            try:
+                parsed = datetime.strptime(clean.upper(), pattern).replace(
+                    tzinfo=timezone.utc
+                )
+                return (0, parsed.hour * 60 + parsed.minute, clean.casefold())
+            except ValueError:
+                continue
+        return (1, 0, clean.casefold())
+
+    @classmethod
+    def _sync_pool_waves(
+        cls,
+        conn: sqlite3.Connection,
+        event_id: str,
+        records: Iterable[Mapping[str, Any]],
+    ) -> None:
+        labels = list(
+            dict.fromkeys(
+                " ".join(str(record.get("time") or "").split())
+                for record in records
+                if str(record.get("phase") or "pools").strip().lower() == "pools"
+                and str(record.get("time") or "").strip()
+            )
+        )
+        if not labels:
+            return
+        now = utc_now()
+        for label in labels:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO pool_waves (
+                    event_id, wave_key, label, sort_order, is_active,
+                    is_visible, activated_at, activated_by, version,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 0, 0, 0, NULL, '', 0, ?, ?)
+                """,
+                (event_id, _normalize_name(label), label, now, now),
+            )
+
+        rows = conn.execute(
+            "SELECT * FROM pool_waves WHERE event_id = ?", (event_id,)
+        ).fetchall()
+        ordered = sorted(rows, key=lambda row: cls._pool_wave_sort_key(row["label"]))
+        for index, row in enumerate(ordered):
+            conn.execute(
+                """
+                UPDATE pool_waves SET sort_order = ?, updated_at = ?
+                WHERE event_id = ? AND wave_key = ?
+                """,
+                (index, now, event_id, row["wave_key"]),
+            )
+
+        manually_selected = any(
+            int(row["version"]) > 0 and str(row["activated_by"] or "") != "Import"
+            for row in rows
+        )
+        if not manually_selected and ordered:
+            first_key = str(ordered[0]["wave_key"])
+            conn.execute(
+                """
+                UPDATE pool_waves SET is_active = 0, is_visible = 0,
+                    activated_at = NULL, activated_by = '', updated_at = ?
+                WHERE event_id = ?
+                """,
+                (now, event_id),
+            )
+            conn.execute(
+                """
+                UPDATE pool_waves SET is_active = 1, is_visible = 1,
+                    activated_at = COALESCE(activated_at, ?),
+                    activated_by = 'Import', updated_at = ?
+                WHERE event_id = ? AND wave_key = ?
+                """,
+                (now, now, event_id, first_key),
+            )
+
+    def list_pool_waves(self, event_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM events WHERE id = ?", (event_id,)
+            ).fetchone():
+                raise CompCoachError("Competition not found.")
+            rows = conn.execute(
+                """
+                SELECT * FROM pool_waves
+                WHERE event_id = ? ORDER BY sort_order, wave_key
+                """,
+                (event_id,),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "is_active": bool(row["is_active"]),
+                "is_visible": bool(row["is_visible"]),
+            }
+            for row in rows
+        ]
+
+    def set_pool_wave(
+        self,
+        event_id: str,
+        wave_key: str,
+        actor: str,
+        *,
+        active: bool | None = None,
+        visible: bool | None = None,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        clean_actor = str(actor or "").strip()
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        if active is not None and not isinstance(active, bool):
+            raise TypeError("Active must be true, false, or omitted.")
+        if visible is not None and not isinstance(visible, bool):
+            raise TypeError("Visible must be true, false, or omitted.")
+        if active is None and visible is None:
+            raise ValueError("Choose an active or visible wave change.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                """
+                SELECT * FROM pool_waves
+                WHERE event_id = ? AND wave_key = ?
+                """,
+                (event_id, wave_key),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Pool wave not found.")
+            if expected_version is not None and int(row["version"]) != int(
+                expected_version
+            ):
+                raise ConcurrentUpdateError(
+                    "This pool wave changed on another phone. Refresh and try again."
+                )
+            now = utc_now()
+            if active is True:
+                # Every row advances so a stale activation snapshot for any
+                # other wave is rejected after this switch.
+                conn.execute(
+                    """
+                    UPDATE pool_waves SET is_active = 0, is_visible = 0,
+                        version = version + 1, updated_at = ?
+                    WHERE event_id = ?
+                    """,
+                    (now, event_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE pool_waves SET is_active = 1, is_visible = 1,
+                        activated_at = ?, activated_by = ?, updated_at = ?
+                    WHERE event_id = ? AND wave_key = ?
+                    """,
+                    (now, clean_actor, now, event_id, wave_key),
+                )
+            else:
+                new_active = bool(row["is_active"]) if active is None else active
+                new_visible = (
+                    bool(row["is_visible"]) if visible is None else visible
+                )
+                conn.execute(
+                    """
+                    UPDATE pool_waves SET is_active = ?, is_visible = ?,
+                        activated_at = CASE WHEN ? THEN COALESCE(activated_at, ?)
+                                            ELSE activated_at END,
+                        activated_by = CASE WHEN ? THEN ? ELSE activated_by END,
+                        version = version + 1, updated_at = ?
+                    WHERE event_id = ? AND wave_key = ?
+                    """,
+                    (
+                        int(new_active),
+                        int(new_visible),
+                        int(new_active),
+                        now,
+                        int(new_active),
+                        clean_actor,
+                        now,
+                        event_id,
+                        wave_key,
+                    ),
+                )
+            conn.commit()
+        return next(
+            wave for wave in self.list_pool_waves(event_id) if wave["wave_key"] == wave_key
+        )
+
+    def activate_pool_wave(
+        self,
+        event_id: str,
+        wave_key: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        return self.set_pool_wave(
+            event_id,
+            wave_key,
+            actor,
+            active=True,
+            expected_version=expected_version,
+        )
+
+    def create_coach(self, name: str, *, active: bool = True) -> dict[str, Any]:
+        clean_name = " ".join(str(name or "").split())
+        if not clean_name:
+            raise ValueError("Coach name is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM coaches WHERE normalized_name = ?",
+                (_normalize_name(clean_name),),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    "UPDATE coaches SET is_active = ?, updated_at = ? WHERE id = ?",
+                    (int(active), utc_now(), existing["id"]),
+                )
+                coach_id = str(existing["id"])
+            else:
+                coach = self._ensure_coach_record(conn, clean_name)
+                coach_id = str(coach["id"])
+                if not active:
+                    conn.execute(
+                        "UPDATE coaches SET is_active = 0 WHERE id = ?", (coach_id,)
+                    )
+            conn.commit()
+        return self.get_coach(coach_id)  # type: ignore[return-value]
+
+    def get_coach(self, coach_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM coaches WHERE id = ?", (coach_id,)
+            ).fetchone()
+        return self._coach_dict(row)
+
+    def list_coaches(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM coaches"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY name COLLATE NOCASE, id"
+        with self._connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [self._coach_dict(row) for row in rows if row is not None]  # type: ignore[misc]
+
+    def update_coach(
+        self,
+        coach_id: str,
+        *,
+        name: str | None = None,
+        active: bool | None = None,
+    ) -> dict[str, Any]:
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM coaches WHERE id = ?", (coach_id,)
+                ).fetchone()
+                if row is None:
+                    raise CompCoachError("Coach not found.")
+                old_name = str(row["name"])
+                clean_name = old_name
+                if name is not None:
+                    clean_name = " ".join(str(name or "").split())
+                    if not clean_name:
+                        raise ValueError("Coach name is required.")
+                active_value = (
+                    bool(row["is_active"]) if active is None else bool(active)
+                )
+                conn.execute(
+                    """
+                    UPDATE coaches SET name = ?, normalized_name = ?,
+                        is_active = ?, updated_at = ? WHERE id = ?
+                    """,
+                    (
+                        clean_name,
+                        _normalize_name(clean_name),
+                        int(active_value),
+                        utc_now(),
+                        coach_id,
+                    ),
+                )
+                if clean_name != old_name:
+                    self._rename_current_coach_references(
+                        conn,
+                        coach_id=coach_id,
+                        old_name=old_name,
+                        new_name=clean_name,
+                    )
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise CompCoachError("A coach with this name already exists.") from exc
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_coach(coach_id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _renamed_coach_list(
+        raw_value: str | None,
+        *,
+        old_name: str,
+        new_name: str,
+    ) -> list[str]:
+        """Replace one directory name in a legacy staff projection.
+
+        Staff lists pre-date the durable coach directory and therefore store
+        display names rather than coach IDs.  Normalized comparison catches
+        harmless case/spacing drift, while normalized de-duplication prevents
+        a rename from leaving two visually identical options in the UI.
+        """
+
+        old_key = _normalize_name(old_name)
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in _load(raw_value, []):
+            candidate = " ".join(str(value or "").split())
+            if not candidate:
+                continue
+            if _normalize_name(candidate) == old_key:
+                candidate = new_name
+            key = _normalize_name(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(candidate)
+        return result
+
+    @staticmethod
+    def _staff_list_with_name(
+        raw_value: str | None,
+        *,
+        coach_name: str,
+        include: bool,
+    ) -> list[str]:
+        """Return a normalized staff projection with one canonical name toggled."""
+
+        coach_key = _normalize_name(coach_name)
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in _load(raw_value, []):
+            candidate = " ".join(str(value or "").split())
+            if not candidate or _normalize_name(candidate) == coach_key:
+                continue
+            key = _normalize_name(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(candidate)
+        if include:
+            result.append(coach_name)
+        return result
+
+    @classmethod
+    def _rename_current_coach_references(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        coach_id: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Rename denormalized *current* references without rewriting audit data.
+
+        The coach directory and assignment history use a stable coach ID, but
+        the original operational model stores display names in several current
+        state columns.  Updating them in the same transaction prevents a rename
+        from splitting one person into two identities in the live UI.
+        """
+
+        old_key = _normalize_name(old_name)
+        new_key = _normalize_name(new_name)
+        now = utc_now()
+
+        # A day-presence record is the durable registration for one coach on a
+        # competition day.  Keep both meet and child-event JSON projections in
+        # sync, including coordinator-only registrations.
+        registered_meet_ids = [
+            str(row["meet_id"])
+            for row in conn.execute(
+                """
+                SELECT meet_id FROM day_coach_presence
+                WHERE coach_id = ?
+                ORDER BY meet_id
+                """,
+                (coach_id,),
+            ).fetchall()
+        ]
+        for meet_id in registered_meet_ids:
+            meet = conn.execute(
+                """
+                SELECT active_coaches_json, coordinators_json
+                FROM meets WHERE id = ?
+                """,
+                (meet_id,),
+            ).fetchone()
+            if meet is not None:
+                active_coaches = cls._renamed_coach_list(
+                    meet["active_coaches_json"],
+                    old_name=old_name,
+                    new_name=new_name,
+                )
+                coordinators = cls._renamed_coach_list(
+                    meet["coordinators_json"],
+                    old_name=old_name,
+                    new_name=new_name,
+                )
+                conn.execute(
+                    """
+                    UPDATE meets
+                    SET active_coaches_json = ?, coordinators_json = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (_dump(active_coaches), _dump(coordinators), now, meet_id),
+                )
+
+            child_events = conn.execute(
+                """
+                SELECT events.id, events.active_coaches_json,
+                       events.coordinators_json
+                FROM events
+                JOIN meet_events ON meet_events.event_id = events.id
+                WHERE meet_events.meet_id = ?
+                """,
+                (meet_id,),
+            ).fetchall()
+            for event in child_events:
+                active_coaches = cls._renamed_coach_list(
+                    event["active_coaches_json"],
+                    old_name=old_name,
+                    new_name=new_name,
+                )
+                coordinators = cls._renamed_coach_list(
+                    event["coordinators_json"],
+                    old_name=old_name,
+                    new_name=new_name,
+                )
+                conn.execute(
+                    """
+                    UPDATE events
+                    SET active_coaches_json = ?, coordinators_json = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        _dump(active_coaches),
+                        _dump(coordinators),
+                        now,
+                        event["id"],
+                    ),
+                )
+
+        # These athlete columns are live operational state.  Reporter/result
+        # fields, actions, and action JSON are deliberately not included: they
+        # are historical audit evidence and retain the display name used then.
+        athlete_fields = (
+            "main_coach",
+            "side_coach",
+            "covered_by",
+            "help_requested_by",
+            "help_acknowledged_by",
+        )
+        athletes = conn.execute(
+            f"SELECT id, {', '.join(athlete_fields)} FROM athletes"
+        ).fetchall()
+        for athlete in athletes:
+            changed_fields = [
+                field
+                for field in athlete_fields
+                if _normalize_name(str(athlete[field] or "")) == old_key
+            ]
+            if not changed_fields:
+                continue
+            set_clause = ", ".join(f"{field} = ?" for field in changed_fields)
+            conn.execute(
+                f"""
+                UPDATE athletes SET {set_clause}, version = version + 1,
+                    updated_at = ? WHERE id = ?
+                """,
+                (*([new_name] * len(changed_fields)), now, athlete["id"]),
+            )
+
+        pod_fields = ("main_coach", "side_coach")
+        assignments = conn.execute(
+            """
+            SELECT event_id, phase, pod, main_coach, side_coach
+            FROM pod_assignments
+            """
+        ).fetchall()
+        for assignment in assignments:
+            changed_fields = [
+                field
+                for field in pod_fields
+                if _normalize_name(str(assignment[field] or "")) == old_key
+            ]
+            if not changed_fields:
+                continue
+            set_clause = ", ".join(f"{field} = ?" for field in changed_fields)
+            conn.execute(
+                f"""
+                UPDATE pod_assignments SET {set_clause}
+                WHERE event_id = ? AND phase = ? AND pod = ?
+                """,
+                (
+                    *([new_name] * len(changed_fields)),
+                    assignment["event_id"],
+                    assignment["phase"],
+                    assignment["pod"],
+                ),
+            )
+
+        # Open intervals describe the current assignment, so their display
+        # label follows the canonical name while the stable ID and interval
+        # boundaries remain untouched.  Closed intervals stay historical.
+        conn.execute(
+            """
+            UPDATE coach_assignment_history SET coach_name = ?
+            WHERE coach_id = ? AND ended_at IS NULL
+            """,
+            (new_name, coach_id),
+        )
+
+        # coach_name is part of this table's primary key.  Reinsert under the
+        # new key rather than recreating availability: state, timestamps and
+        # the CAS version are preserved exactly.  A stale target-name row is
+        # consolidated so the board cannot expose duplicate identities.
+        availability_rows = conn.execute(
+            "SELECT * FROM coach_availability ORDER BY meet_id, coach_name"
+        ).fetchall()
+        source_by_meet: dict[str, list[sqlite3.Row]] = {}
+        for availability in availability_rows:
+            if _normalize_name(str(availability["coach_name"])) == old_key:
+                source_by_meet.setdefault(str(availability["meet_id"]), []).append(
+                    availability
+                )
+        for meet_id, sources in source_by_meet.items():
+            source = max(
+                sources,
+                key=lambda item: (
+                    int(item["version"]),
+                    str(item["updated_at"] or ""),
+                ),
+            )
+            conflicting_names = [
+                str(item["coach_name"])
+                for item in availability_rows
+                if str(item["meet_id"]) == meet_id
+                and _normalize_name(str(item["coach_name"])) in {old_key, new_key}
+            ]
+            conn.executemany(
+                """
+                DELETE FROM coach_availability
+                WHERE meet_id = ? AND coach_name = ?
+                """,
+                [(meet_id, conflict_name) for conflict_name in conflicting_names],
+            )
+            conn.execute(
+                """
+                INSERT INTO coach_availability (
+                    meet_id, coach_name, is_available, available_since,
+                    updated_at, updated_by, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    meet_id,
+                    new_name,
+                    source["is_available"],
+                    source["available_since"],
+                    source["updated_at"],
+                    source["updated_by"],
+                    source["version"],
+                ),
+            )
+
+    def set_competition_coach_roles(
+        self,
+        competition_id: str,
+        coach_id: str,
+        roles: Iterable[str],
+    ) -> dict[str, Any]:
+        clean_roles = list(
+            dict.fromkeys(str(role or "").strip().lower() for role in roles)
+        )
+        if not clean_roles or any(
+            role not in {"coach", "coordinator", "admin"} for role in clean_roles
+        ):
+            raise ValueError("Roles must contain coach, coordinator, or admin.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute(
+                "SELECT 1 FROM competitions WHERE id = ?", (competition_id,)
+            ).fetchone():
+                raise CompCoachError("Competition not found.")
+            if not conn.execute(
+                "SELECT 1 FROM coaches WHERE id = ?", (coach_id,)
+            ).fetchone():
+                raise CompCoachError("Coach not found.")
+            conn.execute(
+                """
+                DELETE FROM competition_coaches
+                WHERE competition_id = ? AND coach_id = ?
+                """,
+                (competition_id, coach_id),
+            )
+            now = utc_now()
+            conn.executemany(
+                """
+                INSERT INTO competition_coaches (
+                    competition_id, coach_id, role, added_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [(competition_id, coach_id, role, now) for role in clean_roles],
+            )
+
+            # Coordinator links are day-operational.  A competition role makes
+            # the person eligible, while day presence decides whether their
+            # name is exposed for that day.  Keep legacy meet/event projections
+            # aligned without changing the independently managed coach list.
+            coordinator_enabled = "coordinator" in clean_roles
+            coach = conn.execute(
+                "SELECT name FROM coaches WHERE id = ?", (coach_id,)
+            ).fetchone()
+            day_rows = conn.execute(
+                """
+                SELECT meets.id, meets.coordinators_json,
+                       day_coach_presence.presence_status
+                FROM meets
+                JOIN day_coach_presence
+                  ON day_coach_presence.meet_id = meets.id
+                WHERE meets.competition_id = ?
+                  AND day_coach_presence.coach_id = ?
+                """,
+                (competition_id, coach_id),
+            ).fetchall()
+            for day in day_rows:
+                coordinators = self._staff_list_with_name(
+                    day["coordinators_json"],
+                    coach_name=str(coach["name"]),
+                    include=(
+                        coordinator_enabled
+                        and str(day["presence_status"]) == "present"
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE meets SET coordinators_json = ? WHERE id = ?
+                    """,
+                    (_dump(coordinators), day["id"]),
+                )
+                conn.execute(
+                    """
+                    UPDATE events SET coordinators_json = ?
+                    WHERE id IN (
+                        SELECT event_id FROM meet_events WHERE meet_id = ?
+                    )
+                    """,
+                    (_dump(coordinators), day["id"]),
+                )
+            conn.commit()
+        return next(
+            row
+            for row in self.list_competition_coaches(competition_id)
+            if row["coach_id"] == coach_id
+        )
+
+    def list_competition_coaches(
+        self, competition_id: str
+    ) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM competitions WHERE id = ?", (competition_id,)
+            ).fetchone():
+                raise CompCoachError("Competition not found.")
+            rows = conn.execute(
+                """
+                SELECT coaches.*, competition_coaches.role,
+                       competition_coaches.added_at
+                FROM competition_coaches
+                JOIN coaches ON coaches.id = competition_coaches.coach_id
+                WHERE competition_coaches.competition_id = ?
+                ORDER BY coaches.name COLLATE NOCASE, competition_coaches.role
+                """,
+                (competition_id,),
+            ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            coach_id = str(row["id"])
+            if coach_id not in result:
+                result[coach_id] = {
+                    "competition_id": competition_id,
+                    "coach_id": coach_id,
+                    "name": row["name"],
+                    "is_active": bool(row["is_active"]),
+                    "roles": [],
+                    "added_at": row["added_at"],
+                }
+            result[coach_id]["roles"].append(str(row["role"]))
+        return list(result.values())
+
+    def set_day_coach_presence(
+        self,
+        meet_id: str,
+        coach_id: str,
+        present: bool | None = None,
+        actor: str = "",
+        *,
+        presence_status: str | None = None,
+        home_event_id: object = NO_CHANGE,
+    ) -> dict[str, Any]:
+        clean_actor = str(actor or "").strip()
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        if presence_status is None:
+            if not isinstance(present, bool):
+                raise TypeError("Present must be true or false.")
+            status = "present" if present else "absent"
+        else:
+            status = str(presence_status or "").strip().lower()
+            if status not in {"scheduled", "present", "absent"}:
+                raise ValueError("Presence status must be scheduled, present, or absent.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = self._assert_meet_open(conn, meet_id)
+            coach = conn.execute(
+                "SELECT * FROM coaches WHERE id = ?", (coach_id,)
+            ).fetchone()
+            if coach is None:
+                raise CompCoachError("Coach not found.")
+            existing = conn.execute(
+                """
+                SELECT * FROM day_coach_presence
+                WHERE meet_id = ? AND coach_id = ?
+                """,
+                (meet_id, coach_id),
+            ).fetchone()
+            selected_home = existing["home_event_id"] if existing else None
+            if home_event_id is not NO_CHANGE:
+                selected_home = str(home_event_id or "").strip() or None
+                if selected_home and not conn.execute(
+                    """
+                    SELECT 1 FROM meet_events
+                    WHERE meet_id = ? AND event_id = ?
+                    """,
+                    (meet_id, selected_home),
+                ).fetchone():
+                    raise CompCoachError(
+                        "The home event must belong to this competition day."
+                    )
+            now = utc_now()
+            conn.execute(
+                """
+                INSERT INTO day_coach_presence (
+                    meet_id, coach_id, presence_status, home_event_id,
+                    updated_at, updated_by
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(meet_id, coach_id) DO UPDATE SET
+                    presence_status = excluded.presence_status,
+                    home_event_id = excluded.home_event_id,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by
+                """,
+                (meet_id, coach_id, status, selected_home, now, clean_actor),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO competition_coaches (
+                    competition_id, coach_id, role, added_at
+                ) VALUES (?, ?, 'coach', ?)
+                """,
+                (meet["competition_id"], coach_id, now),
+            )
+
+            active_names = [
+                str(value).strip()
+                for value in _load(meet["active_coaches_json"], [])
+                if str(value).strip()
+            ]
+            coach_name = str(coach["name"])
+            active_names = self._staff_list_with_name(
+                _dump(active_names),
+                coach_name=coach_name,
+                include=status == "present",
+            )
+            coordinator_role = conn.execute(
+                """
+                SELECT 1 FROM competition_coaches
+                WHERE competition_id = ? AND coach_id = ?
+                  AND role = 'coordinator'
+                """,
+                (meet["competition_id"], coach_id),
+            ).fetchone()
+            coordinator_names = self._staff_list_with_name(
+                meet["coordinators_json"],
+                coach_name=coach_name,
+                include=status == "present" and coordinator_role is not None,
+            )
+            conn.execute(
+                """
+                UPDATE meets SET active_coaches_json = ?, coordinators_json = ?,
+                    updated_at = ? WHERE id = ?
+                """,
+                (_dump(active_names), _dump(coordinator_names), now, meet_id),
+            )
+            conn.execute(
+                """
+                UPDATE events SET active_coaches_json = ?, coordinators_json = ?,
+                    updated_at = ?
+                WHERE id IN (SELECT event_id FROM meet_events WHERE meet_id = ?)
+                """,
+                (
+                    _dump(active_names),
+                    _dump(coordinator_names),
+                    now,
+                    meet_id,
+                ),
+            )
+            conn.commit()
+        return next(
+            row for row in self.list_day_coaches(meet_id) if row["coach_id"] == coach_id
+        )
+
+    def list_day_coaches(
+        self,
+        meet_id: str,
+        *,
+        present_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM meets WHERE id = ?", (meet_id,)
+            ).fetchone():
+                raise CompCoachError("Competition group not found.")
+            sql = """
+                SELECT coaches.id AS coach_id, coaches.name, coaches.is_active,
+                       day_coach_presence.presence_status,
+                       day_coach_presence.home_event_id,
+                       day_coach_presence.updated_at,
+                       day_coach_presence.updated_by,
+                       events.name AS home_event_name,
+                       (SELECT COUNT(*) FROM coach_assignment_history AS history
+                        WHERE history.meet_id = day_coach_presence.meet_id
+                          AND history.coach_id = day_coach_presence.coach_id
+                          AND history.ended_at IS NULL) AS assignment_count
+                FROM day_coach_presence
+                JOIN coaches ON coaches.id = day_coach_presence.coach_id
+                LEFT JOIN events ON events.id = day_coach_presence.home_event_id
+                WHERE day_coach_presence.meet_id = ?
+            """
+            params: list[Any] = [meet_id]
+            if present_only:
+                sql += " AND day_coach_presence.presence_status = 'present'"
+            sql += " ORDER BY assignment_count > 0, coaches.name COLLATE NOCASE"
+            rows = conn.execute(sql, params).fetchall()
+            role_rows = conn.execute(
+                """
+                SELECT competition_coaches.coach_id, competition_coaches.role
+                FROM competition_coaches
+                JOIN meets ON meets.competition_id = competition_coaches.competition_id
+                WHERE meets.id = ?
+                ORDER BY competition_coaches.role
+                """,
+                (meet_id,),
+            ).fetchall()
+        roles_by_coach: dict[str, list[str]] = {}
+        for role in role_rows:
+            roles_by_coach.setdefault(str(role["coach_id"]), []).append(
+                str(role["role"])
+            )
+        return [
+            {
+                **dict(row),
+                "is_active": bool(row["is_active"]),
+                "is_present": row["presence_status"] == "present",
+                "is_used": int(row["assignment_count"]) > 0,
+                "assignment_count": int(row["assignment_count"]),
+                "roles": roles_by_coach.get(str(row["coach_id"]), []),
+            }
+            for row in rows
+        ]
+
+    def list_assignment_history(
+        self,
+        *,
+        competition_id: str | None = None,
+        meet_id: str | None = None,
+        event_id: str | None = None,
+        athlete_id: str | None = None,
+        coach_id: str | None = None,
+        include_closed: bool = True,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("competition_id", competition_id),
+            ("meet_id", meet_id),
+            ("event_id", event_id),
+            ("athlete_id", athlete_id),
+            ("coach_id", coach_id),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if not include_closed:
+            clauses.append("ended_at IS NULL")
+        sql = "SELECT * FROM coach_assignment_history"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY started_at, id"
+        with self._connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            {**dict(row), "is_cross_event": bool(row["is_cross_event"])}
+            for row in rows
+        ]
+
+    def list_coach_availability(self, meet_id: str) -> list[dict[str, Any]]:
+        """Return explicit availability and computed workload for active coaches."""
+
+        with self._connection() as conn:
+            meet = conn.execute(
+                "SELECT * FROM meets WHERE id = ?", (meet_id,)
+            ).fetchone()
+            if meet is None:
+                raise CompCoachError("Competition group not found.")
+            coaches = [
+                str(coach).strip()
+                for coach in _load(meet["active_coaches_json"], [])
+                if str(coach).strip()
+            ]
+            stored_rows = conn.execute(
+                """
+                SELECT * FROM coach_availability
+                WHERE meet_id = ?
+                """,
+                (meet_id,),
+            ).fetchall()
+            stored = {str(row["coach_name"]): dict(row) for row in stored_rows}
+            athlete_rows = conn.execute(
+                """
+                SELECT athletes.*
+                FROM athletes
+                JOIN meet_events ON meet_events.event_id = athletes.event_id
+                WHERE meet_events.meet_id = ?
+                """,
+                (meet_id,),
+            ).fetchall()
+            athletes = [dict(row) for row in athlete_rows]
+
+        result: list[dict[str, Any]] = []
+        for coach in coaches:
+            assigned_ids: set[str] = set()
+            temporary_ids: set[str] = set()
+            unfinished_ids: set[str] = set()
+            for athlete in athletes:
+                athlete_id = str(athlete["id"])
+                planned = coach in {
+                    athlete.get("main_coach"),
+                    athlete.get("side_coach"),
+                }
+                active = (
+                    athlete.get("active_state") == "active"
+                    and athlete.get("participation_status", "active") == "active"
+                )
+                unresolved_help = bool(athlete.get("help_requested_at"))
+                temporary = active and (
+                    athlete.get("covered_by") == coach
+                    or (
+                        unresolved_help
+                        and coach
+                        in {
+                            athlete.get("help_requested_by"),
+                            athlete.get("help_acknowledged_by"),
+                        }
+                    )
+                )
+                if planned:
+                    assigned_ids.add(athlete_id)
+                elif temporary:
+                    temporary_ids.add(athlete_id)
+
+                if temporary:
+                    unfinished_ids.add(athlete_id)
+                if not planned or not active:
+                    continue
+                if athlete.get("phase") == "de":
+                    unfinished_ids.add(athlete_id)
+                    continue
+                pool_complete = (
+                    athlete.get("pool_wins") is not None
+                    and athlete.get("pool_losses") is not None
+                )
+                if (
+                    not pool_complete
+                    or athlete.get("call_status") != "waiting"
+                    or unresolved_help
+                ):
+                    unfinished_ids.add(athlete_id)
+
+            row = stored.get(coach)
+            is_available = bool(row["is_available"]) if row else False
+            assigned_count = len(assigned_ids)
+            unfinished_count = len(unfinished_ids)
+            result.append(
+                {
+                    "meet_id": meet_id,
+                    "coach_name": coach,
+                    "is_available": is_available,
+                    "available_since": row["available_since"] if row else None,
+                    "updated_at": row["updated_at"] if row else None,
+                    "updated_by": row["updated_by"] if row else "",
+                    "version": int(row["version"]) if row else 0,
+                    "assigned_count": assigned_count,
+                    "temporary_count": len(temporary_ids),
+                    "unfinished_count": unfinished_count,
+                    "suggested_available": bool(
+                        assigned_count and unfinished_count == 0
+                    ),
+                }
+            )
+        return result
+
+    def set_coach_availability(
+        self,
+        meet_id: str,
+        coach: str,
+        available: bool,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist one coach's meet-wide availability with an optional CAS guard."""
+
+        coach = str(coach or "").strip()
+        actor = str(actor or "").strip()
+        if not coach:
+            raise ValueError("Coach is required.")
+        if not actor:
+            raise ValueError("Actor is required.")
+        if not isinstance(available, bool):
+            raise TypeError("Available must be true or false.")
+        if expected_version is not None and (
+            isinstance(expected_version, bool) or not isinstance(expected_version, int)
+        ):
+            raise TypeError("Expected version must be a whole number or omitted.")
+        if expected_version is not None and expected_version < 0:
+            raise ValueError("Expected version cannot be negative.")
+
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = self._assert_meet_open(conn, meet_id)
+            active_coaches = {
+                str(name).strip()
+                for name in _load(meet["active_coaches_json"], [])
+                if str(name).strip()
+            }
+            if coach not in active_coaches:
+                raise CompCoachError(f"{coach} is not an active coach for this competition.")
+            row = conn.execute(
+                """
+                SELECT * FROM coach_availability
+                WHERE meet_id = ? AND coach_name = ?
+                """,
+                (meet_id, coach),
+            ).fetchone()
+            current_version = int(row["version"]) if row else 0
+            current_available = bool(row["is_available"]) if row else False
+            if expected_version is not None and current_version != expected_version:
+                raise ConcurrentUpdateError(
+                    "This coach's availability changed on another phone. "
+                    "The board has been refreshed; please try again."
+                )
+            if current_available is available:
+                conn.commit()
+                return {
+                    "meet_id": meet_id,
+                    "coach_name": coach,
+                    "is_available": current_available,
+                    "available_since": row["available_since"] if row else None,
+                    "updated_at": row["updated_at"] if row else None,
+                    "updated_by": row["updated_by"] if row else "",
+                    "version": current_version,
+                }
+
+            now = utc_now()
+            new_version = current_version + 1
+            available_since = now if available else None
+            conn.execute(
+                """
+                INSERT INTO coach_availability (
+                    meet_id, coach_name, is_available, available_since,
+                    updated_at, updated_by, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(meet_id, coach_name) DO UPDATE SET
+                    is_available = excluded.is_available,
+                    available_since = excluded.available_since,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by,
+                    version = excluded.version
+                """,
+                (
+                    meet_id,
+                    coach,
+                    int(available),
+                    available_since,
+                    now,
+                    actor,
+                    new_version,
+                ),
+            )
+            conn.execute(
+                "UPDATE meets SET updated_at = ? WHERE id = ?", (now, meet_id)
+            )
+            conn.commit()
+        return {
+            "meet_id": meet_id,
+            "coach_name": coach,
+            "is_available": available,
+            "available_since": available_since,
+            "updated_at": now,
+            "updated_by": actor,
+            "version": new_version,
+        }
+
+    def list_pod_assignments(
+        self, event_id: str, phase: str | None = None
+    ) -> list[dict[str, Any]]:
+        if phase is not None and phase not in {"pools", "de"}:
+            raise ValueError("Phase must be pools, de, or omitted.")
+        sql = "SELECT * FROM pod_assignments WHERE event_id = ?"
+        params: list[Any] = [event_id]
+        if phase is not None:
+            sql += " AND phase = ?"
+            params.append(phase)
+        sql += " ORDER BY phase, pod"
+        with self._connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def deploy_available_coach_to_pod(
+        self,
+        event_id: str,
+        *,
+        pod: str,
+        coach: str,
+        actor: str,
+        expected_availability_version: int,
+        replace_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically consume availability and add a DE Side/support coach."""
+
+        pod = str(pod or "").strip().upper()
+        coach = str(coach or "").strip()
+        actor = str(actor or "").strip()
+        if not pod:
+            raise ValueError("Pod is required.")
+        if not coach:
+            raise ValueError("Coach is required.")
+        if not actor:
+            raise ValueError("Actor is required.")
+        if isinstance(expected_availability_version, bool) or not isinstance(
+            expected_availability_version, int
+        ):
+            raise TypeError("Expected availability version must be a whole number.")
+        if expected_availability_version < 0:
+            raise ValueError("Expected availability version cannot be negative.")
+
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            meet = self._meet_for_event(conn, event_id)
+            active_coaches = {
+                str(name).strip()
+                for name in _load(meet["active_coaches_json"], [])
+                if str(name).strip()
+            }
+            if coach not in active_coaches:
+                raise CompCoachError(f"{coach} is not an active coach for this competition.")
+
+            availability = conn.execute(
+                """
+                SELECT * FROM coach_availability
+                WHERE meet_id = ? AND coach_name = ?
+                """,
+                (meet["id"], coach),
+            ).fetchone()
+            current_version = int(availability["version"]) if availability else 0
+            if current_version != expected_availability_version:
+                raise ConcurrentUpdateError(
+                    "This coach's availability changed on another phone. "
+                    "Review the situation and try again."
+                )
+            if availability is None or not bool(availability["is_available"]):
+                raise ConcurrentUpdateError(
+                    f"{coach} is no longer marked available."
+                )
+
+            assignment = conn.execute(
+                """
+                SELECT * FROM pod_assignments
+                WHERE event_id = ? AND phase = 'de' AND pod = ?
+                """,
+                (event_id, pod),
+            ).fetchone()
+            previous_main = str(assignment["main_coach"] or "") if assignment else ""
+            previous_side = str(assignment["side_coach"] or "") if assignment else ""
+            if previous_main == coach:
+                raise CompCoachError(f"{coach} is already the Main coach for Pod {pod}.")
+            if previous_side and previous_side != coach and not replace_existing:
+                raise CompCoachError(
+                    f"Pod {pod} already has Side coach {previous_side}. "
+                    "Confirm replacement before deploying another coach."
+                )
+
+            rows = conn.execute(
+                """
+                SELECT * FROM athletes
+                WHERE event_id = ? AND phase = 'de' AND pod = ?
+                  AND active_state = 'active' AND participation_status = 'active'
+                ORDER BY id
+                """,
+                (event_id, pod),
+            ).fetchall()
+            if not rows:
+                raise CompCoachError(
+                    f"Pod {pod} has no active Direct Elimination athletes."
+                )
+
+            now = utc_now()
+            conn.execute(
+                """
+                INSERT INTO pod_assignments (
+                    event_id, phase, pod, main_coach, side_coach, updated_at
+                ) VALUES (?, 'de', ?, ?, ?, ?)
+                ON CONFLICT(event_id, phase, pod) DO UPDATE SET
+                    side_coach = excluded.side_coach,
+                    updated_at = excluded.updated_at
+                """,
+                (event_id, pod, previous_main, coach, now),
+            )
+            self._sync_assignment_slot(
+                conn,
+                event_id=event_id,
+                athlete_id=None,
+                target_type="pod",
+                assignment_kind="side",
+                coach_name=coach,
+                phase="de",
+                pod=pod,
+                actor=actor,
+                source="deploy",
+            )
+            updated = 0
+            exceptions_kept = 0
+            for stored_athlete in rows:
+                athlete = dict(stored_athlete)
+                if bool(athlete.get("assignment_override")):
+                    exceptions_kept += 1
+                    continue
+                if athlete.get("side_coach") == coach:
+                    continue
+                self._update_athlete(
+                    conn,
+                    event_id=event_id,
+                    athlete_id=athlete["id"],
+                    changes={"side_coach": coach},
+                    action="pod_assignment",
+                    actor=actor,
+                    expected_version=int(athlete["version"]),
+                    require_active=True,
+                )
+                updated += 1
+
+            availability_cursor = conn.execute(
+                """
+                UPDATE coach_availability
+                SET is_available = 0, available_since = NULL, updated_at = ?,
+                    updated_by = ?, version = version + 1
+                WHERE meet_id = ? AND coach_name = ? AND is_available = 1
+                  AND version = ?
+                """,
+                (
+                    now,
+                    actor,
+                    meet["id"],
+                    coach,
+                    expected_availability_version,
+                ),
+            )
+            if availability_cursor.rowcount != 1:
+                raise ConcurrentUpdateError(
+                    "This coach's availability changed on another phone. "
+                    "The deployment was not saved."
+                )
+            conn.execute(
+                "UPDATE events SET updated_at = ? WHERE id = ?", (now, event_id)
+            )
+            conn.commit()
+
+        return {
+            "event_id": event_id,
+            "phase": "de",
+            "pod": pod,
+            "coach": coach,
+            "main_coach": previous_main,
+            "side_coach": coach,
+            "previous_side": previous_side,
+            "updated": updated,
+            "exceptions_kept": exceptions_kept,
+            "availability_version": expected_availability_version + 1,
+        }
+
     def rotate_token(self, event_id: str, role: str) -> str:
         if role not in {"admin", "coordinator", "coach"}:
             raise ValueError("Unknown role.")
@@ -1577,6 +4113,7 @@ class CompCoachDB:
             """
             SELECT * FROM athletes
             WHERE event_id = ? AND phase = 'pools' AND active_state = 'active'
+              AND participation_status = 'active'
             ORDER BY name COLLATE NOCASE, id
             """,
             (event_id,),
@@ -1623,6 +4160,7 @@ class CompCoachDB:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
+            self._sync_pool_waves(conn, event_id, record_list)
             non_advancers: list[dict[str, Any]] = []
             if confirmed_non_advancers is not None:
                 advancing_keys = self._de_advancing_keys(
@@ -1650,6 +4188,7 @@ class CompCoachDB:
                         "Review the complete Direct Elimination list and confirm it again."
                     )
             now = utc_now()
+            inherited_coaches: set[str] = set()
             for record in record_list:
                 athlete_key = str(record.get("athlete_id") or "").strip()
                 name = str(record.get("name") or "").strip()
@@ -1718,6 +4257,19 @@ class CompCoachDB:
                         new=new,
                         version_after=0,
                     )
+                    self._sync_athlete_assignment_history(
+                        conn,
+                        current=None,
+                        new=new,
+                        actor=actor,
+                        source="import_added",
+                    )
+                    if assignment:
+                        inherited_coaches.update(
+                            str(assignment[field] or "").strip()
+                            for field in ("main_coach", "side_coach")
+                            if str(assignment[field] or "").strip()
+                        )
                     stats["added"] += 1
                     continue
 
@@ -1786,6 +4338,23 @@ class CompCoachDB:
                 if not changed:
                     stats["unchanged"] += 1
                     continue
+                resulting_active = (
+                    changes.get("active_state", current.get("active_state")) == "active"
+                )
+                inherited_assignment_changed = assignment_is_managed and (
+                    phase_changed
+                    or pod_changed
+                    or any(
+                        changes.get(field, current.get(field)) != current.get(field)
+                        for field in ("main_coach", "side_coach")
+                    )
+                )
+                if resulting_active and inherited_assignment_changed:
+                    inherited_coaches.update(
+                        str(changes.get(field, current.get(field)) or "").strip()
+                        for field in ("main_coach", "side_coach")
+                        if str(changes.get(field, current.get(field)) or "").strip()
+                    )
                 new_version = int(current["version"]) + 1
                 set_clause = ", ".join(f"{key} = ?" for key in changes)
                 conn.execute(
@@ -1794,6 +4363,13 @@ class CompCoachDB:
                 )
                 new = dict(
                     conn.execute("SELECT * FROM athletes WHERE id = ?", (current["id"],)).fetchone()
+                )
+                self._sync_athlete_assignment_history(
+                    conn,
+                    current=current,
+                    new=new,
+                    actor=actor,
+                    source="import_updated",
                 )
                 self._log_action(
                     conn,
@@ -1832,6 +4408,11 @@ class CompCoachDB:
                     require_active=True,
                 )
                 stats["moved_out"] += 1
+            if inherited_coaches:
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(
+                    conn, meet["id"], inherited_coaches, actor
+                )
             conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (now, event_id))
             conn.commit()
         return stats
@@ -1859,7 +4440,10 @@ class CompCoachDB:
             raise ConcurrentUpdateError(
                 "This athlete changed on another phone. The board has been refreshed; please try again."
             )
-        if require_active and current["active_state"] != "active":
+        if require_active and (
+            current["active_state"] != "active"
+            or current.get("participation_status", "active") != "active"
+        ):
             raise ConcurrentUpdateError(
                 f"{current['name']} is no longer active. The update was not saved."
             )
@@ -1873,6 +4457,13 @@ class CompCoachDB:
             [*safe_changes.values(), new_version, utc_now(), athlete_id],
         )
         new = dict(conn.execute("SELECT * FROM athletes WHERE id = ?", (athlete_id,)).fetchone())
+        self._sync_athlete_assignment_history(
+            conn,
+            current=current,
+            new=new,
+            actor=actor,
+            source=action,
+        )
         self._log_action(
             conn,
             event_id=event_id,
@@ -1917,6 +4508,17 @@ class CompCoachDB:
                         actor=actor,
                     )
                     count += 1
+            if count:
+                assigned_coaches = []
+                if main_coach is not NO_CHANGE and str(main_coach or "").strip():
+                    assigned_coaches.append(str(main_coach).strip())
+                if side_coach is not NO_CHANGE and str(side_coach or "").strip():
+                    assigned_coaches.append(str(side_coach).strip())
+                if assigned_coaches:
+                    meet = self._meet_for_event(conn, event_id)
+                    self._clear_available_coaches(
+                        conn, meet["id"], assigned_coaches, actor
+                    )
             conn.commit()
         return count
 
@@ -1937,6 +4539,13 @@ class CompCoachDB:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
             now = utc_now()
+            previous_assignment = conn.execute(
+                """
+                SELECT * FROM pod_assignments
+                WHERE event_id = ? AND phase = ? AND pod = ?
+                """,
+                (event_id, phase, pod),
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO pod_assignments (
@@ -1949,6 +4558,28 @@ class CompCoachDB:
                 """,
                 (event_id, phase, pod, main_coach, side_coach, now),
             )
+            for kind, coach_name in (
+                ("main", main_coach),
+                ("side", side_coach),
+            ):
+                previous_name = (
+                    str(previous_assignment[f"{kind}_coach"] or "")
+                    if previous_assignment is not None
+                    else ""
+                )
+                if previous_name != str(coach_name or ""):
+                    self._sync_assignment_slot(
+                        conn,
+                        event_id=event_id,
+                        athlete_id=None,
+                        target_type="pod",
+                        assignment_kind=kind,
+                        coach_name=str(coach_name or ""),
+                        phase=phase,
+                        pod=pod,
+                        actor=actor,
+                        source="assign_pod",
+                    )
             rows = conn.execute(
                 """
                 SELECT id FROM athletes
@@ -1964,6 +4595,14 @@ class CompCoachDB:
                     changes={"main_coach": main_coach, "side_coach": side_coach},
                     action="pod_assignment",
                     actor=actor,
+                )
+            assigned_coaches = [
+                coach for coach in (main_coach, side_coach) if str(coach).strip()
+            ]
+            if assigned_coaches:
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(
+                    conn, meet["id"], assigned_coaches, actor
                 )
             conn.commit()
         return len(rows)
@@ -2010,6 +4649,11 @@ class CompCoachDB:
                 expected_version=expected_version,
                 require_active=True,
             )
+            if covered_by:
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(
+                    conn, meet["id"], [covered_by], actor
+                )
             conn.commit()
         return result
 
@@ -2028,7 +4672,10 @@ class CompCoachDB:
                 conn.rollback()
                 return False, "Athlete not found."
             current = dict(row)
-            if current["active_state"] != "active":
+            if (
+                current["active_state"] != "active"
+                or current.get("participation_status", "active") != "active"
+            ):
                 conn.rollback()
                 return False, f"{current['name']} is no longer active."
             if current["call_status"] == "waiting":
@@ -2042,7 +4689,8 @@ class CompCoachDB:
                 """
                 UPDATE athletes
                 SET covered_by = ?, covered_at = ?, version = version + 1, updated_at = ?
-                WHERE id = ? AND event_id = ? AND covered_by = '' AND active_state = 'active'
+                WHERE id = ? AND event_id = ? AND covered_by = ''
+                  AND active_state = 'active' AND participation_status = 'active'
                 """,
                 (coach, now, now, athlete_id, event_id),
             )
@@ -2052,6 +4700,13 @@ class CompCoachDB:
                 who = latest["covered_by"] if latest else "another coach"
                 return False, f"Already covered by {who}."
             new = dict(conn.execute("SELECT * FROM athletes WHERE id = ?", (athlete_id,)).fetchone())
+            self._sync_athlete_assignment_history(
+                conn,
+                current=current,
+                new=new,
+                actor=coach,
+                source="claim",
+            )
             self._log_action(
                 conn,
                 event_id=event_id,
@@ -2062,6 +4717,8 @@ class CompCoachDB:
                 new=new,
                 version_after=new["version"],
             )
+            meet = self._meet_for_event(conn, event_id)
+            self._clear_available_coaches(conn, meet["id"], [coach], coach)
             conn.commit()
         return True, f"You are covering {new['name']}."
 
@@ -2163,7 +4820,10 @@ class CompCoachDB:
                 raise ConcurrentUpdateError(
                     "This athlete changed on another phone. The board has been refreshed; please try again."
                 )
-            if current["active_state"] != "active":
+            if (
+                current["active_state"] != "active"
+                or current.get("participation_status", "active") != "active"
+            ):
                 raise CompCoachError("Help cannot be requested for an athlete who is Out.")
             snapshot = (
                 location.strip().upper()
@@ -2187,6 +4847,8 @@ class CompCoachDB:
                 expected_version=current["version"],
                 require_active=True,
             )
+            meet = self._meet_for_event(conn, event_id)
+            self._clear_available_coaches(conn, meet["id"], [actor], actor)
             conn.commit()
         return result
 
@@ -2232,6 +4894,8 @@ class CompCoachDB:
                 expected_version=expected_version,
                 require_active=True,
             )
+            meet = self._meet_for_event(conn, event_id)
+            self._clear_available_coaches(conn, meet["id"], [actor], actor)
             conn.commit()
         return result
 
@@ -2277,6 +4941,195 @@ class CompCoachDB:
             conn.commit()
         return result
 
+    def set_athlete_participation(
+        self,
+        event_id: str,
+        athlete_id: str,
+        status: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Set attendance independently from competitive elimination state."""
+
+        clean_status = str(status or "").strip().lower()
+        if clean_status not in {"active", "absent", "withdrawn"}:
+            raise ValueError("Participation status must be active, absent, or withdrawn.")
+        if clean_status == "active":
+            return self.restore_athlete_participation(
+                event_id,
+                athlete_id,
+                actor,
+                expected_version=expected_version,
+            )
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
+                (event_id, athlete_id),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            if expected_version is not None and int(current["version"]) != int(
+                expected_version
+            ):
+                raise ConcurrentUpdateError(
+                    "This athlete changed on another phone. The board has been refreshed; "
+                    "please try again."
+                )
+            if current.get("participation_status", "active") == clean_status:
+                conn.commit()
+                return current
+            result = self._update_athlete(
+                conn,
+                event_id=event_id,
+                athlete_id=athlete_id,
+                changes={
+                    "participation_status": clean_status,
+                    "call_status": "waiting",
+                    "live_location": "",
+                    "reported_at": None,
+                    "reported_by": "",
+                    "covered_by": "",
+                    "covered_at": None,
+                    "help_requested_by": "",
+                    "help_requested_at": None,
+                    "help_location": "",
+                    "help_acknowledged_by": "",
+                    "help_acknowledged_at": None,
+                },
+                action=f"participation_{clean_status}",
+                actor=actor,
+                expected_version=expected_version,
+            )
+            conn.commit()
+        return result
+
+    def mark_absent(
+        self,
+        event_id: str,
+        athlete_id: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        return self.set_athlete_participation(
+            event_id,
+            athlete_id,
+            "absent",
+            actor,
+            expected_version=expected_version,
+        )
+
+    def mark_withdrawn(
+        self,
+        event_id: str,
+        athlete_id: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        return self.set_athlete_participation(
+            event_id,
+            athlete_id,
+            "withdrawn",
+            actor,
+            expected_version=expected_version,
+        )
+
+    def restore_athlete_participation(
+        self,
+        event_id: str,
+        athlete_id: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Reverse the latest absence/withdrawal only when no newer edit exists."""
+
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
+                (event_id, athlete_id),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            if expected_version is not None and int(current["version"]) != int(
+                expected_version
+            ):
+                raise ConcurrentUpdateError(
+                    "This athlete changed on another phone. The board has been refreshed; "
+                    "please try again."
+                )
+            if current.get("participation_status", "active") == "active":
+                conn.commit()
+                return current
+            source = conn.execute(
+                """
+                SELECT * FROM actions
+                WHERE event_id = ? AND athlete_id = ?
+                  AND action IN ('participation_absent', 'participation_withdrawn')
+                  AND version_after = ? AND undone_at IS NULL
+                ORDER BY id DESC LIMIT 1
+                """,
+                (event_id, athlete_id, current["version"]),
+            ).fetchone()
+            if source is None:
+                raise ConcurrentUpdateError(
+                    "A newer update exists. Restore was blocked to avoid reviving stale "
+                    "live information."
+                )
+            previous = _load(source["previous_json"], {})
+            live_fields = {
+                "call_status",
+                "live_location",
+                "reported_at",
+                "reported_by",
+                "covered_by",
+                "covered_at",
+                "help_requested_by",
+                "help_requested_at",
+                "help_location",
+                "help_acknowledged_by",
+                "help_acknowledged_at",
+            }
+            changes = {
+                field: previous.get(field, current.get(field)) for field in live_fields
+            }
+            changes["participation_status"] = "active"
+            if current["active_state"] != "active":
+                changes.update(
+                    {
+                        "call_status": "waiting",
+                        "live_location": "",
+                        "reported_at": None,
+                        "reported_by": "",
+                        "covered_by": "",
+                        "covered_at": None,
+                        "help_requested_by": "",
+                        "help_requested_at": None,
+                        "help_location": "",
+                        "help_acknowledged_by": "",
+                        "help_acknowledged_at": None,
+                    }
+                )
+            result = self._update_athlete(
+                conn,
+                event_id=event_id,
+                athlete_id=athlete_id,
+                changes=changes,
+                action="participation_restore",
+                actor=actor,
+                expected_version=current["version"],
+            )
+            conn.commit()
+        return result
+
     def mark_result(
         self,
         event_id: str,
@@ -2297,9 +5150,13 @@ class CompCoachDB:
             ).fetchone()
             if current is None:
                 raise CompCoachError("Athlete not found.")
+            current = dict(current)
             if current["phase"] != "de":
                 raise CompCoachError("Won/Lost is available only during direct elimination.")
-            if current["active_state"] != "active":
+            if (
+                current["active_state"] != "active"
+                or current.get("participation_status", "active") != "active"
+            ):
                 raise ConcurrentUpdateError(
                     "This athlete is already Out. The board has been refreshed."
                 )
@@ -2487,6 +5344,17 @@ class CompCoachDB:
                 actor=actor,
                 expected_version=expected_version,
             )
+            restored_coaches = [
+                result.get("main_coach"),
+                result.get("side_coach"),
+                result.get("covered_by"),
+                result.get("help_requested_by"),
+                result.get("help_acknowledged_by"),
+            ]
+            meet = self._meet_for_event(conn, event_id)
+            self._clear_available_coaches(
+                conn, meet["id"], restored_coaches, actor
+            )
             conn.commit()
         return result
 
@@ -2551,6 +5419,13 @@ class CompCoachDB:
                 [*restored.values(), new_version, now, current["id"]],
             )
             new = dict(conn.execute("SELECT * FROM athletes WHERE id = ?", (current["id"],)).fetchone())
+            self._sync_athlete_assignment_history(
+                conn,
+                current=current,
+                new=new,
+                actor=actor,
+                source="undo",
+            )
             conn.execute(
                 "UPDATE actions SET undone_at = ?, undone_by = ? WHERE id = ?",
                 (now, actor, action_id),

@@ -1761,6 +1761,449 @@ def test_concurrent_prepare_next_day_creates_exactly_one_successor():
         temp.cleanup()
 
 
+def test_coach_availability_is_meet_wide_and_suggested_across_events():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet(
+            "October NAC",
+            ["Alex", "Jordan"],
+            ["Casey"],
+            first_event_name="Cadet Epee",
+        )
+        first = db.list_meet_events(meet["id"])[0]
+        second = db.add_meet_event(meet["id"], "Junior Epee")
+
+        pool_record = sample_record(phase="pools", strip="C1")
+        pool_record["pod"] = "C"
+        db.merge_import(first["id"], [pool_record], "Casey")
+        pool_athlete = db.list_athletes(first["id"])[0]
+        db.assign_athletes(
+            first["id"], [pool_athlete["id"]], main_coach="Alex", actor="Casey"
+        )
+
+        alex = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Alex"]
+        assert alex["assigned_count"] == 1
+        assert alex["unfinished_count"] == 1
+        assert alex["suggested_available"] is False
+
+        db.set_pool_result(
+            first["id"],
+            pool_athlete["id"],
+            wins=4,
+            losses=2,
+            actor="Alex",
+            expected_version=db.get_athlete(first["id"], pool_athlete["id"])[
+                "version"
+            ],
+        )
+        alex = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Alex"]
+        assert alex["unfinished_count"] == 0
+        assert alex["suggested_available"] is True
+
+        available = db.set_coach_availability(
+            meet["id"], "Alex", True, "Alex", expected_version=alex["version"]
+        )
+        assert available["is_available"] is True
+
+        de_record = sample_record(phase="de", strip="P3")
+        de_record.update(
+            athlete_id="ath_junior",
+            name="VALE Nico",
+            pod="P",
+        )
+        db.merge_import(second["id"], [de_record], "Casey")
+        de_athlete = db.list_athletes(second["id"])[0]
+        db.assign_athletes(
+            second["id"], [de_athlete["id"]], side_coach="Alex", actor="Casey"
+        )
+
+        alex = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Alex"]
+        assert alex["is_available"] is False
+        assert alex["assigned_count"] == 2
+        assert alex["unfinished_count"] == 1
+        assert alex["suggested_available"] is False
+    finally:
+        temp.cleanup()
+
+
+def test_coach_availability_cas_staff_removal_and_locked_meet():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet("NAC", ["Alex", "Jordan"], ["Casey"])
+
+        initial = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Jordan"]
+        assert initial["is_available"] is False
+        assert initial["version"] == 0
+
+        available = db.set_coach_availability(
+            meet["id"], "Jordan", True, "Jordan", expected_version=0
+        )
+        assert available["is_available"] is True
+        assert available["available_since"]
+        assert available["version"] == 1
+        with pytest.raises(ConcurrentUpdateError, match="another phone"):
+            db.set_coach_availability(
+                meet["id"], "Jordan", False, "Jordan", expected_version=0
+            )
+
+        db.update_meet_staff(
+            meet["id"],
+            name="NAC",
+            active_coaches=["Alex"],
+            coordinators=["Casey"],
+            timezone_name="America/Los_Angeles",
+        )
+        assert [
+            row["coach_name"] for row in db.list_coach_availability(meet["id"])
+        ] == ["Alex"]
+        db.update_meet_staff(
+            meet["id"],
+            name="NAC",
+            active_coaches=["Alex", "Jordan"],
+            coordinators=["Casey"],
+            timezone_name="America/Los_Angeles",
+        )
+        readded = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Jordan"]
+        assert readded["is_available"] is False
+        assert readded["version"] == 0
+
+        db.set_meet_locked(meet["id"], True)
+        with pytest.raises(EventLockedError, match="read-only"):
+            db.set_coach_availability(meet["id"], "Jordan", True, "Jordan")
+    finally:
+        temp.cleanup()
+
+
+def test_deploy_available_coach_preserves_main_and_keeps_exceptions():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet(
+            "NAC", ["Alex", "Jordan", "Taylor"], ["Casey"]
+        )
+        event = db.list_meet_events(meet["id"])[0]
+        first = sample_record(phase="de", strip="M1")
+        second = dict(first, athlete_id="ath_two", name="STONE Avery", strip="M2")
+        db.merge_import(event["id"], [first, second], "Casey")
+        athletes = db.list_athletes(event["id"])
+        db.assign_pod(
+            event["id"],
+            phase="de",
+            pod="M",
+            main_coach="Alex",
+            side_coach="Jordan",
+            actor="Casey",
+        )
+        db.assign_athletes(
+            event["id"],
+            [athletes[0]["id"]],
+            side_coach="Jordan",
+            actor="Casey",
+        )
+
+        taylor = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Taylor"]
+        available = db.set_coach_availability(
+            meet["id"],
+            "Taylor",
+            True,
+            "Taylor",
+            expected_version=taylor["version"],
+        )
+        with pytest.raises(CompCoachError, match="no active Direct Elimination"):
+            db.deploy_available_coach_to_pod(
+                event["id"],
+                pod="Z",
+                coach="Taylor",
+                actor="Casey",
+                expected_availability_version=available["version"],
+            )
+        with pytest.raises(CompCoachError, match="already has Side coach Jordan"):
+            db.deploy_available_coach_to_pod(
+                event["id"],
+                pod="M",
+                coach="Taylor",
+                actor="Casey",
+                expected_availability_version=available["version"],
+            )
+        assert {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Taylor"]["is_available"] is True
+
+        deployed = db.deploy_available_coach_to_pod(
+            event["id"],
+            pod="m",
+            coach="Taylor",
+            actor="Casey",
+            expected_availability_version=available["version"],
+            replace_existing=True,
+        )
+        assert deployed["main_coach"] == "Alex"
+        assert deployed["previous_side"] == "Jordan"
+        assert deployed["side_coach"] == "Taylor"
+        assert deployed["updated"] == 1
+        assert deployed["exceptions_kept"] == 1
+        pod = db.list_pod_assignments(event["id"], "de")[0]
+        assert pod["main_coach"] == "Alex"
+        assert pod["side_coach"] == "Taylor"
+        assert {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Taylor"]["is_available"] is False
+    finally:
+        temp.cleanup()
+
+
+def test_live_claim_help_and_restore_clear_explicit_availability():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet(
+            "NAC", ["Alex", "Jordan", "Taylor", "Casey"], ["Morgan"]
+        )
+        event = db.list_meet_events(meet["id"])[0]
+        db.merge_import(event["id"], [sample_record()], "Morgan")
+        athlete = db.list_athletes(event["id"])[0]
+
+        def status(name):
+            return {
+                row["coach_name"]: row
+                for row in db.list_coach_availability(meet["id"])
+            }[name]
+
+        jordan = status("Jordan")
+        db.set_coach_availability(
+            meet["id"], "Jordan", True, "Jordan", expected_version=jordan["version"]
+        )
+        athlete = db.report_call(
+            event["id"],
+            athlete["id"],
+            status="now",
+            location="M1",
+            actor="Morgan",
+            covered_by="Jordan",
+            expected_version=athlete["version"],
+        )
+        assert status("Jordan")["is_available"] is False
+
+        athlete = db.release(
+            event["id"],
+            athlete["id"],
+            "Morgan",
+            expected_version=athlete["version"],
+        )
+        taylor = status("Taylor")
+        db.set_coach_availability(
+            meet["id"], "Taylor", True, "Taylor", expected_version=taylor["version"]
+        )
+        claimed, _ = db.claim(event["id"], athlete["id"], "Taylor")
+        assert claimed is True
+        assert status("Taylor")["is_available"] is False
+
+        athlete = db.request_help(
+            event["id"],
+            athlete["id"],
+            "Alex",
+            expected_version=db.get_athlete(event["id"], athlete["id"])["version"],
+        )
+        casey = status("Casey")
+        db.set_coach_availability(
+            meet["id"], "Casey", True, "Casey", expected_version=casey["version"]
+        )
+        db.acknowledge_help(
+            event["id"],
+            athlete["id"],
+            "Casey",
+            expected_version=athlete["version"],
+        )
+        assert status("Casey")["is_available"] is False
+
+        db.clear_help(
+            event["id"],
+            athlete["id"],
+            "Morgan",
+            expected_version=db.get_athlete(event["id"], athlete["id"])["version"],
+        )
+        db.assign_athletes(
+            event["id"], [athlete["id"]], main_coach="Alex", actor="Morgan"
+        )
+        current = db.get_athlete(event["id"], athlete["id"])
+        lost = db.mark_result(
+            event["id"],
+            athlete["id"],
+            outcome="lost",
+            actor="Alex",
+            expected_version=current["version"],
+        )
+        alex = status("Alex")
+        db.set_coach_availability(
+            meet["id"], "Alex", True, "Alex", expected_version=alex["version"]
+        )
+        db.restore_athlete(
+            event["id"],
+            athlete["id"],
+            "Morgan",
+            expected_version=lost["version"],
+        )
+        assert status("Alex")["is_available"] is False
+    finally:
+        temp.cleanup()
+
+
+def test_merge_import_inherited_pod_assignment_clears_availability():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet("NAC", ["Alex", "Jordan"], ["Casey"])
+        event = db.list_meet_events(meet["id"])[0]
+        db.assign_pod(
+            event["id"],
+            phase="de",
+            pod="M",
+            main_coach="Alex",
+            side_coach="Jordan",
+            actor="Casey",
+        )
+        before = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }
+        for coach in ("Alex", "Jordan"):
+            db.set_coach_availability(
+                meet["id"],
+                coach,
+                True,
+                coach,
+                expected_version=before[coach]["version"],
+            )
+
+        db.merge_import(event["id"], [sample_record()], "Casey")
+        after = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }
+        assert after["Alex"]["is_available"] is False
+        assert after["Jordan"]["is_available"] is False
+        athlete = db.list_athletes(event["id"])[0]
+        assert athlete["main_coach"] == "Alex"
+        assert athlete["side_coach"] == "Jordan"
+    finally:
+        temp.cleanup()
+
+
+def test_competing_deployments_consume_one_available_coach_once():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        meet = db.create_meet("NAC", ["Alex", "Jordan"], ["Casey"])
+        event = db.list_meet_events(meet["id"])[0]
+        m_record = sample_record(phase="de", strip="M1")
+        p_record = dict(
+            m_record,
+            athlete_id="ath_pod_p",
+            name="PARK Lena",
+            strip="P1",
+            pod="P",
+        )
+        db.merge_import(event["id"], [m_record, p_record], "Casey")
+        for pod in ("M", "P"):
+            db.assign_pod(
+                event["id"],
+                phase="de",
+                pod=pod,
+                main_coach="Alex",
+                side_coach="",
+                actor="Casey",
+            )
+        jordan = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Jordan"]
+        available = db.set_coach_availability(
+            meet["id"],
+            "Jordan",
+            True,
+            "Jordan",
+            expected_version=jordan["version"],
+        )
+
+        def deploy(pod):
+            try:
+                result = db.deploy_available_coach_to_pod(
+                    event["id"],
+                    pod=pod,
+                    coach="Jordan",
+                    actor="Casey",
+                    expected_availability_version=available["version"],
+                )
+                return "ok", result["pod"]
+            except ConcurrentUpdateError:
+                return "stale", pod
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(deploy, ["M", "P"]))
+        assert sorted(state for state, _ in results) == ["ok", "stale"]
+        assigned = [
+            row
+            for row in db.list_pod_assignments(event["id"], "de")
+            if row["side_coach"] == "Jordan"
+        ]
+        assert len(assigned) == 1
+        assert {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(meet["id"])
+        }["Jordan"]["is_available"] is False
+    finally:
+        temp.cleanup()
+
+
+def test_next_day_starts_with_clean_coach_availability():
+    temp = TemporaryDirectory()
+    try:
+        db = CompCoachDB(Path(temp.name) / "test.db")
+        source = db.create_meet("Day 1", ["Alex", "Jordan"], ["Casey"])
+        db.set_coach_availability(
+            source["id"], "Jordan", True, "Jordan", expected_version=0
+        )
+        successor = db.prepare_next_day(
+            source["id"], "Day 2", "2026-10-10", ["Junior Epee"], "Casey"
+        )
+
+        source_state = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(source["id"])
+        }["Jordan"]
+        next_state = {
+            row["coach_name"]: row
+            for row in db.list_coach_availability(successor["id"])
+        }["Jordan"]
+        assert source_state["is_available"] is True
+        assert next_state["is_available"] is False
+        assert next_state["version"] == 0
+    finally:
+        temp.cleanup()
+
+
 if __name__ == "__main__":
     for name, value in sorted(globals().items()):
         if name.startswith("test_") and callable(value):

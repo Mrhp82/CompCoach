@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 
+import pytest
 import streamlit as st
 from PIL import Image
 from streamlit.testing.v1 import AppTest
@@ -104,7 +105,7 @@ def test_landing_creates_competition_then_requires_identity(tmp_path, monkeypatc
     assert nav_named(app, "admin_nav_").options == [
         "My Group",
         "Live",
-        "Team Plan",
+        "Situation",
         "Setup",
         "Share",
     ]
@@ -146,6 +147,7 @@ def test_coordinator_can_publish_covered_live_call(tmp_path, monkeypatch):
     database.merge_import(event["id"], parsed.records, "Carmine")
 
     app = open_board(event["id"], event["coordinator_token"], "Irina")
+    nav_named(app, "coordinator_nav_").set_value("Live").run()
     keyed(app.get("button_group"), "call_status_").set_value("Now")
     selectbox_named(app, "Coverage").set_value("Sam").run()
     button_named(app, "Publish update").click().run()
@@ -173,6 +175,7 @@ def test_coordinator_update_keeps_current_coverage_by_default(tmp_path, monkeypa
     database.claim(event["id"], athlete["id"], "Sam")
 
     app = open_board(event["id"], event["coordinator_token"], "Irina")
+    nav_named(app, "coordinator_nav_").set_value("Live").run()
     assert selectbox_named(app, "Coverage").value == "Keep current (Sam)"
     keyed(app.get("button_group"), "call_status_").set_value("Now").run()
     button_named(app, "Publish update").click().run()
@@ -240,6 +243,135 @@ def test_assignment_clears_selection_and_moves_completed_athlete_to_bottom(
     saved = database.get_athlete(event["id"], audrey["id"])
     assert saved["main_coach"] == "Igor"
     assert saved["side_coach"] == "Carmine"
+
+
+def test_assignment_coach_selectors_use_meet_wide_usage_without_blocking_reuse(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "meet-wide-coach-order.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(
+        database,
+        ["Cadet Men's Epee", "Cadet Women's Epee"],
+        coaches=("Igor", "Carmine", "Sam", "Vivien"),
+    )
+    men, women = events
+    database.merge_import(
+        men["id"],
+        parse_pasted_table(
+            "Name\tStrip #\tPool #\n"
+            "M ONE\tB1\t1\n"
+            "M TWO\tB2\t2\n"
+            "M TEN\tB10\t10\n"
+            "M NINE\tB9\t9\n"
+            "M TWENTY\tB20\t20\n"
+            "M AA TWO\tAA2\t21\n"
+            "M AA TEN\tAA10\t22\n"
+            "M MISSING\t\t23\n"
+        ).records,
+        "Carmine",
+    )
+    database.merge_import(
+        men["id"],
+        parse_pasted_table("Name\tStrip #\nM DE\tQ3").records,
+        "Carmine",
+    )
+    database.merge_import(
+        women["id"],
+        parse_pasted_table(
+            "Name\tStrip #\tPool #\nW POOL\tC1\t1"
+        ).records,
+        "Carmine",
+    )
+    database.merge_import(
+        women["id"],
+        parse_pasted_table("Name\tStrip #\nW DE\tP3").records,
+        "Carmine",
+    )
+    men_rows = database.list_athletes(men["id"])
+    assigned_men = [
+        row
+        for row in men_rows
+        if row["phase"] == "pools" and row["source_strip"] in {"B2", "B10"}
+    ]
+    database.assign_athletes(
+        men["id"],
+        [row["id"] for row in assigned_men],
+        main_coach="Igor",
+        actor="Carmine",
+    )
+    women_rows = database.list_athletes(women["id"])
+    pool_row = next(row for row in women_rows if row["phase"] == "pools")
+    de_row = next(row for row in women_rows if row["phase"] == "de")
+    database.assign_athletes(
+        women["id"], [pool_row["id"]], main_coach="Igor", actor="Carmine"
+    )
+    database.assign_pod(
+        women["id"],
+        phase="de",
+        pod="P",
+        main_coach="Carmine",
+        side_coach="",
+        actor="Carmine",
+    )
+    database.assign_pod(
+        women["id"],
+        phase="de",
+        pod="EMPTY",
+        main_coach="Vivien",
+        side_coach="",
+        actor="Carmine",
+    )
+    database.report_call(
+        women["id"],
+        de_row["id"],
+        status="now",
+        location="P3",
+        actor="Irina",
+        covered_by="Sam",
+    )
+
+    app = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(app, "admin_nav_").set_value("Setup").run()
+    nav_named(app, "admin_setup_nav_").set_value("Assign").run()
+
+    main = keyed(app.selectbox, f"main_{men['id']}_pools")
+    expected = [
+        "No change",
+        "None",
+        "Vivien",
+        "✓ Igor · already assigned",
+        "✓ Carmine · already assigned",
+        "✓ Sam · already assigned",
+    ]
+    assert main.options == expected
+    main.set_value("Igor").run()
+    assert keyed(app.selectbox, f"main_{men['id']}_pools").value == "Igor"
+
+    athlete_options = keyed(app.multiselect, "selected_assign_").options
+    assert [option.split(" · ", 1)[0] for option in athlete_options] == [
+        "M AA TWO",
+        "M AA TEN",
+        "M ONE",
+        "M NINE",
+        "M TWENTY",
+        "M MISSING",
+        "✓ M TWO",
+        "✓ M TEN",
+    ]
+
+    keyed(app.get("button_group"), f"assignment_phase_{men['id']}").set_value(
+        "Direct Elimination"
+    ).run()
+    assert keyed(app.selectbox, "pod_main").options == [
+        "None",
+        "Vivien",
+        "✓ Igor · already assigned",
+        "✓ Carmine · already assigned",
+        "✓ Sam · already assigned",
+    ]
 
 
 def test_share_aggregates_all_events_into_one_message_and_common_links(
@@ -360,6 +492,25 @@ def test_coach_my_group_saves_pool_result_and_global_help_crosses_events(
     saved = database.get_athlete(foil["id"], max_row["id"])
     assert saved["pool_wins"] == 3
     assert saved["pool_losses"] == 3
+    carmine = open_board(meet["id"], meet["coach_token"], "Carmine")
+    assert any(
+        expander.label == "Completed pool results · 1"
+        for expander in carmine.expander
+    )
+    assert any("0 active work · 1 completed pool" in item.value for item in carmine.caption)
+    assert any("Cadet Foil" in value for value in markdown_values(carmine))
+    assert not any(button.label == "🚨 Need help now" for button in carmine.button)
+
+    edit_wins = button_group_named(carmine, "Wins")
+    edit_losses = button_group_named(carmine, "Losses")
+    assert edit_wins.value == 3
+    assert edit_losses.value == 3
+    edit_wins.set_value(4)
+    edit_losses.set_value(2)
+    button_named(carmine, "Save pool result").click().run()
+    edited = database.get_athlete(foil["id"], max_row["id"])
+    assert edited["pool_wins"] == 4
+    assert edited["pool_losses"] == 2
 
     database.request_help(epee["id"], alex["id"], "Carmine")
 
@@ -533,7 +684,8 @@ def test_team_plan_groups_same_named_athletes_by_event_and_marks_main_bold(
         )
 
     app = open_board(meet["id"], meet["coach_token"], "Carmine")
-    nav_named(app, "coach_nav_").set_value("Team Plan").run()
+    nav_named(app, "coach_nav_").set_value("Situation").run()
+    nav_named(app, "situation_view_").set_value("Assignments").run()
 
     labels = [expander.label for expander in app.expander]
     assert "⭐ Cadet Foil · 1 active" in labels
@@ -547,6 +699,122 @@ def test_team_plan_groups_same_named_athletes_by_event_and_marks_main_bold(
     assert "B1" in plan_markup and "P3" in plan_markup
     assert len(database.list_athletes(events[0]["id"])) == 1
     assert len(database.list_athletes(events[1]["id"])) == 1
+    assert not app.exception
+
+
+def test_coach_without_assignments_can_declare_meet_wide_availability(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "coach-availability.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, _events = create_multi_event(database, ["Cadet Foil", "Junior Epee"])
+
+    app = open_board(meet["id"], meet["coach_token"], "Sam")
+    assert button_named(app, "I’m available to help")
+    button_named(app, "I’m available to help").click().run()
+
+    status = next(
+        row
+        for row in database.list_coach_availability(meet["id"])
+        if row["coach_name"] == "Sam"
+    )
+    assert status["is_available"] is True
+    assert status["available_since"]
+    assert button_named(app, "I’m no longer available")
+    assert not app.exception
+
+
+def test_coordinator_situation_sends_available_side_support_to_de_sector(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "situation-deploy.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(database, ["Junior Epee"])
+    event = events[0]
+    database.merge_import(
+        event["id"],
+        parse_pasted_table(
+            "Name\tStrip #\nDING Max\tP1\nNG Alexander\tP3"
+        ).records,
+        "Carmine",
+    )
+    database.assign_pod(
+        event["id"],
+        phase="de",
+        pod="P",
+        main_coach="Carmine",
+        side_coach="",
+        actor="Carmine",
+    )
+    database.set_coach_availability(meet["id"], "Sam", True, "Sam")
+
+    app = open_board(meet["id"], meet["coordinator_token"], "Irina")
+
+    assert nav_named(app, "coordinator_nav_").value == "Situation"
+    markup = "\n".join(markdown_values(app))
+    assert "Sector P" in markup
+    assert "2 still in" in markup
+    assert "Main: Carmine" in markup
+    assert "Sam" in markup
+    button_named(app, "Send Sam to Sector P").click().run()
+
+    saved = database.list_athletes(event["id"])
+    assert {row["main_coach"] for row in saved} == {"Carmine"}
+    assert {row["side_coach"] for row in saved} == {"Sam"}
+    availability = next(
+        row
+        for row in database.list_coach_availability(meet["id"])
+        if row["coach_name"] == "Sam"
+    )
+    assert availability["is_available"] is False
+    assert not app.exception
+
+
+def test_situation_pool_results_include_advanced_and_out_athletes(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "situation-pool-results.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(database, ["Cadet Foil"])
+    event = events[0]
+    database.merge_import(
+        event["id"],
+        parse_pasted_table(
+            "Name\tStrip #\tTime\tPool #\n"
+            "DING Max\tG1\t\t4\n"
+            "OR Evan\tG2\t\t5"
+        ).records,
+        "Carmine",
+    )
+    by_name = {row["name"]: row for row in database.list_athletes(event["id"])}
+    database.set_pool_result(
+        event["id"], by_name["DING Max"]["id"], wins=6, losses=0, actor="Carmine"
+    )
+    database.set_pool_result(
+        event["id"], by_name["OR Evan"]["id"], wins=0, losses=6, actor="Carmine"
+    )
+    database.merge_import(
+        event["id"],
+        parse_pasted_table("Name\tStrip #\nDING Max\tM1").records,
+        "Carmine",
+    )
+    evan = next(row for row in database.list_athletes(event["id"]) if row["name"] == "OR Evan")
+    database.mark_out(event["id"], evan["id"], "Carmine")
+
+    app = open_board(meet["id"], meet["coach_token"], "Sam")
+    nav_named(app, "coach_nav_").set_value("Situation").run()
+    nav_named(app, "situation_view_").set_value("Pool Results").run()
+
+    markup = "\n".join(markdown_values(app))
+    assert "DING Max" in markup and "6 W · 0 L" in markup
+    assert "OR Evan" in markup and "0 W · 6 L" in markup
+    assert "Out" in markup
     assert not app.exception
 
 
@@ -662,7 +930,7 @@ def test_four_event_meet_has_unique_widgets_across_primary_views(tmp_path, monke
     )
     assert not app.exception
 
-    nav_named(app, "admin_nav_").set_value("Team Plan").run()
+    nav_named(app, "admin_nav_").set_value("Situation").run()
     assert not app.exception
     nav_named(app, "admin_nav_").set_value("Setup").run()
     nav_named(app, "admin_setup_nav_").set_value("Events").run()
@@ -1273,3 +1541,224 @@ def test_stale_de_confirmation_is_cancelled_after_another_phone_update(
     assert database.get_athlete(event["id"], athlete["id"])["de_wins"] == 1
     assert any("changed on another phone" in info.value for info in app.info)
     assert not app.exception
+
+
+def test_admin_attendance_hides_absent_and_withdrawn_then_restores(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "attendance-ui.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(database, ["Cadet Epee"])
+    event = events[0]
+    database.merge_import(
+        event["id"],
+        parse_pasted_table(
+            "Name\tStrip #\tTime\tPool #\n"
+            "DING Max\tB1\t\t1\n"
+            "OR Evan\tB2\t\t2"
+        ).records,
+        "Carmine",
+    )
+    athletes = {row["name"]: row for row in database.list_athletes(event["id"])}
+    database.assign_athletes(
+        event["id"],
+        [row["id"] for row in athletes.values()],
+        main_coach="Carmine",
+        actor="Carmine",
+    )
+
+    app = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(app, "admin_nav_").set_value("Setup").run()
+    nav_named(app, "admin_setup_nav_").set_value("Assign").run()
+    keyed(app.multiselect, "attendance_selected_").set_value(
+        [athletes["DING Max"]["id"]]
+    ).run()
+    button_named(app, "Mark absent").click().run()
+
+    absent = database.get_athlete(event["id"], athletes["DING Max"]["id"])
+    assert absent["participation_status"] == "absent"
+    assert all(
+        "DING Max" not in option
+        for option in keyed(app.multiselect, "selected_assign_").options
+    )
+    assert any(expander.label == "Absent · 1" for expander in app.expander)
+
+    nav_named(app, "admin_nav_").set_value("My Group").run()
+    markup = "\n".join(markdown_values(app))
+    assert "OR Evan" in markup
+    assert "DING Max" not in markup
+
+    nav_named(app, "admin_nav_").set_value("Setup").run()
+    nav_named(app, "admin_setup_nav_").set_value("Assign").run()
+    keyed(app.button, "restore_attendance_").click().run()
+    restored = database.get_athlete(event["id"], athletes["DING Max"]["id"])
+    assert restored["participation_status"] == "active"
+    assert any(
+        "DING Max" in option
+        for option in keyed(app.multiselect, "selected_assign_").options
+    )
+
+    keyed(app.multiselect, "attendance_selected_").set_value(
+        [athletes["DING Max"]["id"]]
+    ).run()
+    button_named(app, "Mark withdrawn").click().run()
+    withdrawn = database.get_athlete(event["id"], athletes["DING Max"]["id"])
+    assert withdrawn["participation_status"] == "withdrawn"
+    assert any(expander.label == "Withdrawn · 1" for expander in app.expander)
+    assert all(
+        "DING Max" not in option
+        for option in keyed(app.multiselect, "selected_assign_").options
+    )
+
+    keyed(app.button, "restore_attendance_").click().run()
+    restored_again = database.get_athlete(
+        event["id"], athletes["DING Max"]["id"]
+    )
+    assert restored_again["participation_status"] == "active"
+    assert restored_again["main_coach"] == "Carmine"
+    assert not app.exception
+
+
+@pytest.mark.parametrize(
+    "wave_times",
+    [("8:00 AM", "10:00 AM"), ("8:00 AM", "10:00 AM", "1:00 PM")],
+)
+def test_pool_waves_assign_all_then_show_and_activate_one_wave(
+    tmp_path, monkeypatch, wave_times
+):
+    path = tmp_path / f"waves-{len(wave_times)}.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(database, ["Junior Epee"])
+    event = events[0]
+    names = [f"WAVE ATHLETE {index}" for index in range(1, len(wave_times) + 1)]
+    table_rows = ["Name\tStrip #\tTime\tPool #"]
+    table_rows.extend(
+        f"{name}\tB{index}\t{start_time}\t{index}"
+        for index, (name, start_time) in enumerate(zip(names, wave_times), start=1)
+    )
+    table_rows.append("UNTIMED ATHLETE\tB20\t\t20")
+    database.merge_import(
+        event["id"], parse_pasted_table("\n".join(table_rows)).records, "Carmine"
+    )
+
+    waves = database.list_pool_waves(event["id"])
+    assert [wave["label"] for wave in waves] == list(wave_times)
+    assert waves[0]["is_active"] is True
+    assert all(not wave["is_active"] for wave in waves[1:])
+
+    admin = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(admin, "admin_nav_").set_value("Setup").run()
+    nav_named(admin, "admin_setup_nav_").set_value("Assign").run()
+    assert selectbox_named(admin, "Start time to assign").value == "All start times"
+    assignment_picker = keyed(admin.multiselect, "selected_assign_")
+    assert len(assignment_picker.options) == len(wave_times) + 1
+    all_ids = [row["id"] for row in database.list_athletes(event["id"])]
+    assignment_picker.set_value(all_ids).run()
+    keyed(admin.selectbox, "main_").set_value("Carmine").run()
+    button_named(admin, f"Apply to {len(all_ids)} athletes").click().run()
+    assert all(
+        row["main_coach"] == "Carmine"
+        for row in database.list_athletes(event["id"])
+    )
+
+    coach = open_board(meet["id"], meet["coach_token"], "Carmine")
+    first_markup = "\n".join(markdown_values(coach))
+    assert names[0] in first_markup
+    assert "UNTIMED ATHLETE" in first_markup
+    assert all(name not in first_markup for name in names[1:])
+
+    share = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(share, "admin_nav_").set_value("Share").run()
+    first_message = share.code[2].value
+    assert names[0] in first_message
+    assert "UNTIMED ATHLETE" in first_message
+    assert all(name not in first_message for name in names[1:])
+
+    admin = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(admin, "admin_nav_").set_value("Setup").run()
+    nav_named(admin, "admin_setup_nav_").set_value("Assign").run()
+    keyed(
+        admin.button,
+        f"activate_wave_{event['id']}_{waves[1]['wave_key']}",
+    ).click().run()
+    activated = database.list_pool_waves(event["id"])
+    assert activated[1]["is_active"] is True
+    assert activated[1]["is_visible"] is True
+    assert activated[0]["is_active"] is False
+
+    coach = open_board(meet["id"], meet["coach_token"], "Carmine")
+    second_markup = "\n".join(markdown_values(coach))
+    assert names[1] in second_markup
+    assert "UNTIMED ATHLETE" in second_markup
+    assert names[0] not in second_markup
+    if len(names) == 3:
+        assert names[2] not in second_markup
+
+    admin = open_board(meet["id"], meet["admin_token"], "Carmine")
+    nav_named(admin, "admin_nav_").set_value("Setup").run()
+    nav_named(admin, "admin_setup_nav_").set_value("Assign").run()
+    selectbox_named(admin, "Start time to assign").set_value(wave_times[1]).run()
+    filtered = keyed(admin.multiselect, "selected_assign_").options
+    assert len(filtered) == 1
+    assert names[1] in filtered[0]
+    assert not admin.exception
+
+
+def test_completed_pool_result_remains_in_collapsed_history_after_wave_change(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "completed-wave-history.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(database, ["Junior Epee"])
+    event = events[0]
+    database.merge_import(
+        event["id"],
+        parse_pasted_table(
+            "Name\tStrip #\tTime\tPool #\n"
+            "FIRST WAVE\tB1\t8:00 AM\t1\n"
+            "SECOND WAVE\tB2\t10:00 AM\t2"
+        ).records,
+        "Carmine",
+    )
+    rows = {row["name"]: row for row in database.list_athletes(event["id"])}
+    database.assign_athletes(
+        event["id"],
+        [row["id"] for row in rows.values()],
+        main_coach="Carmine",
+        actor="Carmine",
+    )
+    database.set_pool_result(
+        event["id"],
+        rows["FIRST WAVE"]["id"],
+        wins=4,
+        losses=2,
+        actor="Carmine",
+    )
+    second_wave = database.list_pool_waves(event["id"])[1]
+    database.activate_pool_wave(
+        event["id"],
+        second_wave["wave_key"],
+        "Carmine",
+        expected_version=second_wave["version"],
+    )
+
+    coach = open_board(meet["id"], meet["coach_token"], "Carmine")
+
+    markup = "\n".join(markdown_values(coach))
+    assert "SECOND WAVE" in markup
+    assert "FIRST WAVE" in markup
+    assert any(
+        expander.label == "Completed pool results · 1"
+        for expander in coach.expander
+    )
+    assert any(
+        "1 active work · 1 completed pool" in item.value
+        for item in coach.caption
+    )
+    assert not coach.exception
