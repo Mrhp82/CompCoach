@@ -176,6 +176,7 @@ def _render_add_coach(
     *,
     competition_id: str,
     meet_id: str,
+    actor: str,
     writable: bool,
 ) -> None:
     with st.expander("Add coach"):
@@ -185,10 +186,13 @@ def _render_add_coach(
                 placeholder="First and last name",
                 disabled=not writable,
             )
-            add_to_competition = st.checkbox(
-                "Add to this competition as coach",
-                value=True,
-                disabled=not writable or not competition_id,
+            scope = st.radio(
+                "Add to",
+                (
+                    ["This day · Present", "This competition only", "General directory only"]
+                    if competition_id else ["General directory only"]
+                ),
+                disabled=not writable,
             )
             submitted = st.form_submit_button(
                 "Add coach",
@@ -201,16 +205,40 @@ def _render_add_coach(
             def create() -> None:
                 nonlocal created
                 created = db.create_coach(name)
-                if add_to_competition and competition_id:
-                    db.set_competition_coach_roles(
-                        competition_id, created["id"], ["coach"]
+                if scope != "General directory only" and competition_id:
+                    existing = next(
+                        (
+                            row for row in db.list_competition_coaches(competition_id)
+                            if row["coach_id"] == created["id"]
+                        ),
+                        {},
                     )
-                st.session_state[f"coach_setup_selected_{meet_id}"] = created["id"]
+                    db.set_competition_coach_roles(
+                        competition_id,
+                        created["id"],
+                        list(dict.fromkeys([*existing.get("roles", []), "coach"])),
+                    )
+                    if scope == "This day · Present":
+                        db.set_day_coach_presence(
+                            meet_id,
+                            created["id"],
+                            actor=actor,
+                            presence_status="present",
+                        )
+                # The coach picker has already been rendered in this run.
+                # Apply its new selection before rendering it on the next run.
+                st.session_state[f"coach_setup_pending_selection_{meet_id}"] = created["id"]
 
             _apply_change(
                 create,
                 meet_id=meet_id,
-                success=f"{name.strip()} added to the coach directory.",
+                success=(
+                    f"{name.strip()} is present for this day and ready to assign."
+                    if scope == "This day · Present"
+                    else f"{name.strip()} saved to this competition. Mark Present in Today when needed."
+                    if scope == "This competition only"
+                    else f"{name.strip()} saved to the general coach directory only."
+                ),
             )
 
 
@@ -404,6 +432,7 @@ def render_coach_management(
             db,
             competition_id=state["competition_id"],
             meet_id=meet_id,
+            actor=actor,
             writable=writable,
         )
         return
@@ -411,6 +440,11 @@ def render_coach_management(
     coach_by_id = {str(row["coach_id"]): row for row in coaches}
     coach_ids = list(coach_by_id)
     selected_key = f"coach_setup_selected_{meet_id}"
+    pending_selection = st.session_state.pop(
+        f"coach_setup_pending_selection_{meet_id}", None
+    )
+    if pending_selection in coach_by_id:
+        st.session_state[selected_key] = pending_selection
     if st.session_state.get(selected_key) not in coach_by_id:
         st.session_state[selected_key] = coach_ids[0]
     selected_id = st.selectbox(
@@ -456,5 +490,6 @@ def render_coach_management(
         db,
         competition_id=state["competition_id"],
         meet_id=meet_id,
+        actor=actor,
         writable=writable,
     )

@@ -105,11 +105,116 @@ def test_landing_creates_competition_then_requires_identity(tmp_path, monkeypatc
     assert nav_named(app, "admin_nav_").options == [
         "My Group",
         "Live",
-        "Situation",
         "Setup",
         "Share",
     ]
     assert any("You are Carmine" in value for value in markdown_values(app))
+    assert not app.exception
+
+
+@pytest.mark.parametrize(
+    "role,actor,expected_nav",
+    [
+        ("admin", "Carmine", ["My Group", "Live", "Setup", "Share"]),
+        ("coach", "Sam", ["My Group", "Live"]),
+        ("coordinator", "Irina", ["Live", "Activity"]),
+    ],
+)
+def test_unified_live_retains_shared_features_with_one_operational_athlete_list(
+    tmp_path, monkeypatch, role, actor, expected_nav
+):
+    path = tmp_path / "unified-live.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    monkeypatch.delenv("COMPCOACH_DATABASE_URL", raising=False)
+    monkeypatch.delenv("COMPCOACH_REQUIRE_CLOUD", raising=False)
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, events = create_multi_event(
+        database, ["Cadet Epee", "Junior Epee"],
+        coaches=("Carmine", "Sam", "Taylor"),
+    )
+    database.merge_import(
+        events[0]["id"],
+        parse_pasted_table("Name\tStrip #\tPool #\nEXAMPLE Pool\tA1\t1").records,
+        "Carmine",
+    )
+    pool = database.list_athletes(events[0]["id"])[0]
+    database.assign_athletes(
+        events[0]["id"], [pool["id"]], main_coach="Sam", actor="Carmine",
+    )
+    database.set_pool_result(
+        events[0]["id"], pool["id"], wins=3, losses=3, actor="Sam",
+    )
+    database.merge_import(
+        events[1]["id"],
+        parse_pasted_table("Name\tStrip #\nEXAMPLE Waiting\tP1\nEXAMPLE Called\tQ1").records,
+        "Carmine",
+    )
+    de_rows = database.list_athletes(events[1]["id"])
+    database.assign_de_pods(
+        events[1]["id"], pods=["P", "Q"], coaches=["Sam"], actor="Carmine",
+    )
+    called = next(row for row in de_rows if row["name"] == "EXAMPLE Called")
+    database.report_call(
+        events[1]["id"], called["id"], status="on_deck", location="C3", actor="Irina",
+    )
+    database.set_coach_availability(meet["id"], "Taylor", True, "Taylor")
+
+    app = open_board(meet["id"], meet[f"{role}_token"], actor)
+    assert nav_named(app, f"{role}_nav_").options == expected_nav
+    nav_named(app, f"{role}_nav_").set_value("Live").run()
+    assert not any("situation_view_" in str(group.key) for group in app.get("button_group"))
+    assert nav_named(app, "live_view_").options == [
+        "Uncovered", "Needs Coach", "Covered Now", "No Current Call", "Out",
+    ]
+    sections = {section.label for section in app.expander}
+    assert {"Coaches", "DE sector load · all assignments", "All assignments", "Pool results"} <= sections
+    markup = "\n".join(markdown_values(app))
+    assert "1 coach available" in markup and "2 still in DE" in markup
+    assert "Sector P" in markup and "Sector Q" in markup and "C3" in markup
+    assert "3 W · 3 L" in markup
+    plan = "\n".join(value for value in markdown_values(app) if "cc-plan-group" in value)
+    assert "EXAMPLE Waiting" in plan and "EXAMPLE Called" in plan and "EXAMPLE Pool" in plan
+
+    def assert_one_copy():
+        for row in de_rows:
+            assert len([button for button in app.button if (button.key or "").startswith(f"won_{row['id']}")]) == 1
+            assert len([button for button in app.button if (button.key or "").startswith(f"lost_{row['id']}")]) == 1
+            cards = [value for value in markdown_values(app) if "class='cc-athlete'" in value and row["name"] in value]
+            assert len(cards) == 1
+
+    assert_one_copy()
+    assert not app.exception
+    app.run()
+    assert nav_named(app, f"{role}_nav_").value == "Live"
+    assert_one_copy()
+    assert not app.exception
+
+
+@pytest.mark.parametrize("role,actor", [("admin", "Carmine"), ("coach", "Sam"), ("coordinator", "Irina")])
+@pytest.mark.parametrize("old_section,expanded_label", [("Assignments", "All assignments"), ("Pool Results", "Pool results")])
+def test_saved_situation_navigation_is_migrated_to_live(
+    tmp_path, monkeypatch, role, actor, old_section, expanded_label
+):
+    path = tmp_path / "migrate-situation.db"
+    monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
+    monkeypatch.delenv("COMPCOACH_DATABASE_URL", raising=False)
+    monkeypatch.delenv("COMPCOACH_REQUIRE_CLOUD", raising=False)
+    st.cache_resource.clear()
+    database = CompCoachDB(path)
+    meet, _events = create_multi_event(database, ["Junior Epee"])
+    app = open_board(meet["id"], meet[f"{role}_token"], actor)
+    nav_key = f"{role}_nav_{meet['id']}"
+    app.session_state[nav_key] = "Situation"
+    app.session_state[f"nav_choice_{nav_key}"] = "Situation"
+    old_section_key = f"situation_view_{meet['id']}_{role}"
+    app.session_state[old_section_key] = old_section
+    app.session_state[f"nav_choice_{old_section_key}"] = old_section
+    app.run()
+    assert nav_named(app, f"{role}_nav_").value == "Live"
+    assert "Situation" not in nav_named(app, f"{role}_nav_").options
+    section = next(section for section in app.expander if section.label == expanded_label)
+    assert section.proto.expanded
     assert not app.exception
 
 
@@ -150,6 +255,7 @@ def test_coordinator_can_publish_covered_live_call(tmp_path, monkeypatch):
     nav_named(app, "coordinator_nav_").set_value("Live").run()
     keyed(app.get("button_group"), "call_status_").set_value("Now")
     selectbox_named(app, "Coverage").set_value("Sam").run()
+    keyed(app.text_input, "call_location_").set_value("M1")
     button_named(app, "Publish update").click().run()
 
     assert not app.exception
@@ -365,8 +471,7 @@ def test_assignment_coach_selectors_use_meet_wide_usage_without_blocking_reuse(
     keyed(app.get("button_group"), f"assignment_phase_{men['id']}").set_value(
         "Direct Elimination"
     ).run()
-    assert keyed(app.selectbox, "pod_main").options == [
-        "None",
+    assert keyed(app.multiselect, "de_assignment_pod_coaches_").options == [
         "Vivien",
         "✓ Igor · already assigned",
         "✓ Carmine · already assigned",
@@ -429,7 +534,8 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     assert "🔹 8:00 AM · B1: HSU Audrey [S: CAR]" in message
     assert "🤺 CARMINE" in message
     assert "🔸 8:00 AM · B1: HSU Audrey [M: *IGO*]" in message
-    assert "🔹 M1: DING Max" in message
+    assert "◆ *POD M*" in message
+    assert "Coaches: Carmine\n• DING Max" in message
     assert message.endswith(coach_link)
     assert not app.exception
 
@@ -664,7 +770,7 @@ def test_changed_pasted_text_requires_a_fresh_preview(tmp_path, monkeypatch):
     assert not app.exception
 
 
-def test_team_plan_groups_same_named_athletes_by_event_and_marks_main_bold(
+def test_team_plan_groups_same_named_de_athletes_by_event_with_equal_roles(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "team-plan.db"
@@ -684,8 +790,8 @@ def test_team_plan_groups_same_named_athletes_by_event_and_marks_main_bold(
         )
 
     app = open_board(meet["id"], meet["coach_token"], "Carmine")
-    nav_named(app, "coach_nav_").set_value("Situation").run()
-    nav_named(app, "situation_view_").set_value("Assignments").run()
+    nav_named(app, "coach_nav_").set_value("Live").run()
+    assert any(section.label == "All assignments" for section in app.expander)
 
     labels = [expander.label for expander in app.expander]
     assert "⭐ Cadet Foil · 1 active" in labels
@@ -695,8 +801,11 @@ def test_team_plan_groups_same_named_athletes_by_event_and_marks_main_bold(
     )
     assert "🤺 Carmine · 1" in plan_markup
     assert "🤺 Sam · 1" in plan_markup
-    assert plan_markup.count("🔹 <b>DING Max</b>") == 2
-    assert "B1" in plan_markup and "P3" in plan_markup
+    assert plan_markup.count("◆ DING Max") == 2
+    assert "🔹 <b>DING Max</b>" not in plan_markup
+    assert "Pod B" in plan_markup and "Pod P" in plan_markup
+    assert plan_markup.count("Actual strip TBD") == 2
+    assert "Actual strip B1" not in plan_markup and "Actual strip P3" not in plan_markup
     assert len(database.list_athletes(events[0]["id"])) == 1
     assert len(database.list_athletes(events[1]["id"])) == 1
     assert not app.exception
@@ -726,10 +835,10 @@ def test_coach_without_assignments_can_declare_meet_wide_availability(
     assert not app.exception
 
 
-def test_coordinator_situation_sends_available_side_support_to_de_sector(
+def test_coordinator_live_adds_available_equal_coach_to_de_sector(
     tmp_path, monkeypatch
 ):
-    path = tmp_path / "situation-deploy.db"
+    path = tmp_path / "live-deploy.db"
     monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
     st.cache_resource.clear()
     database = CompCoachDB(path)
@@ -754,30 +863,38 @@ def test_coordinator_situation_sends_available_side_support_to_de_sector(
 
     app = open_board(meet["id"], meet["coordinator_token"], "Irina")
 
-    assert nav_named(app, "coordinator_nav_").value == "Situation"
+    assert nav_named(app, "coordinator_nav_").value == "Live"
+    assert any(section.label == "Coaches" for section in app.expander)
     markup = "\n".join(markdown_values(app))
     assert "Sector P" in markup
     assert "2 still in" in markup
-    assert "Main: Carmine" in markup
+    assert "Coaches: Carmine" in markup
     assert "Sam" in markup
     button_named(app, "Send Sam to Sector P").click().run()
 
     saved = database.list_athletes(event["id"])
-    assert {row["main_coach"] for row in saved} == {"Carmine"}
-    assert {row["side_coach"] for row in saved} == {"Sam"}
+    assert all(row["de_coaches"] == ["Carmine", "Sam"] for row in saved)
     availability = next(
         row
         for row in database.list_coach_availability(meet["id"])
         if row["coach_name"] == "Sam"
     )
     assert availability["is_available"] is False
+    assert nav_named(app, "coordinator_nav_").value == "Live"
+    # AppTest can retain deleted deployment widgets after a fragment rerun.
+    # A newly loaded phone should see the saved plan and no expired shortcut.
+    app = open_board(meet["id"], meet["coordinator_token"], "Irina")
+    assert nav_named(app, "coordinator_nav_").value == "Live"
+    markup = "\n".join(markdown_values(app))
+    assert "Coaches: Carmine / Sam" in markup
+    assert not any(button.label == "Send Sam to Sector P" for button in app.button)
     assert not app.exception
 
 
-def test_situation_pool_results_include_advanced_and_out_athletes(
+def test_live_pool_results_include_advanced_and_out_athletes(
     tmp_path, monkeypatch
 ):
-    path = tmp_path / "situation-pool-results.db"
+    path = tmp_path / "live-pool-results.db"
     monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
     st.cache_resource.clear()
     database = CompCoachDB(path)
@@ -808,8 +925,8 @@ def test_situation_pool_results_include_advanced_and_out_athletes(
     database.mark_out(event["id"], evan["id"], "Carmine")
 
     app = open_board(meet["id"], meet["coach_token"], "Sam")
-    nav_named(app, "coach_nav_").set_value("Situation").run()
-    nav_named(app, "situation_view_").set_value("Pool Results").run()
+    nav_named(app, "coach_nav_").set_value("Live").run()
+    assert any(section.label == "Pool results" for section in app.expander)
 
     markup = "\n".join(markdown_values(app))
     assert "DING Max" in markup and "6 W · 0 L" in markup
@@ -818,7 +935,7 @@ def test_situation_pool_results_include_advanced_and_out_athletes(
     assert not app.exception
 
 
-def test_de_result_requires_confirmation_before_changing_athlete(tmp_path, monkeypatch):
+def test_de_result_is_saved_with_one_tap_and_keeps_live_controls_accessible(tmp_path, monkeypatch):
     path = tmp_path / "de-confirmation.db"
     monkeypatch.setenv("COMPCOACH_DB_PATH", str(path))
     st.cache_resource.clear()
@@ -837,15 +954,17 @@ def test_de_result_requires_confirmation_before_changing_athlete(tmp_path, monke
         group.label in {"Wins", "Losses"} for group in app.get("button_group")
     )
     button_named(app, "Won").click().run()
-    pending = database.get_athlete(event["id"], athlete["id"])
-    assert pending["de_wins"] == 0
-    assert any(button.label == "Confirm Won" for button in app.button)
-
-    button_named(app, "Confirm Won").click().run()
     saved = database.get_athlete(event["id"], athlete["id"])
     assert saved["de_wins"] == 1
     assert saved["last_de_result"] == "won"
     assert saved["active_state"] == "active"
+    assert saved["de_awaiting_next"] == 1
+    assert not any(button.label == "Confirm Won" for button in app.button)
+    cards = "\n".join(value for value in markdown_values(app) if "class='cc-athlete'" in value)
+    assert athlete["name"] in cards
+    assert not any("Ready for next bout" in button.label for button in app.button)
+    assert keyed(app.button, f"won_{athlete['id']}")
+    assert keyed(app.button, f"lost_{athlete['id']}")
     assert not app.exception
 
 
@@ -930,7 +1049,7 @@ def test_four_event_meet_has_unique_widgets_across_primary_views(tmp_path, monke
     )
     assert not app.exception
 
-    nav_named(app, "admin_nav_").set_value("Situation").run()
+    nav_named(app, "admin_nav_").set_value("Live").run()
     assert not app.exception
     nav_named(app, "admin_nav_").set_value("Setup").run()
     nav_named(app, "admin_setup_nav_").set_value("Events").run()
@@ -1036,7 +1155,15 @@ def test_finish_day_keeps_data_read_only_and_offers_no_reopen(tmp_path, monkeypa
     assert archived["ended_by"] == "Carmine"
     assert retained["name"] == "DING Max"
     assert retained["help_requested_at"]
+    assert "event" not in app.query_params
+    assert "token" not in app.query_params
+    assert any(item.value == "⏸️ No active competition" for item in app.subheader)
+    # Use a fresh app session: AppTest retains widgets from completed timed
+    # fragments after app-level navigation even though their state was cleared.
+    app = open_board(meet["id"], meet["admin_token"], "Carmine", archive=True)
     assert any("archive is read-only" in info.value for info in app.info)
+    nav_named(app, "admin_nav_").set_value("Setup").run()
+    nav_named(app, "admin_setup_nav_").set_value("Settings").run()
     assert not any(button.label == "Reopen paused competition" for button in app.button)
     assert button_named(app, "Save settings").disabled
     assert not app.exception
@@ -1065,7 +1192,7 @@ def test_finished_day_without_successor_hides_old_live_data_from_coaches(
     app = open_board(meet["id"], meet["coach_token"], "Sam")
 
     assert any(
-        "This competition day is closed. No new day has been prepared yet. "
+        "This competition day is closed. No competition day is active. "
         "This page checks automatically every 5 seconds."
         in info.value
         for info in app.info
@@ -1508,7 +1635,7 @@ def test_legacy_child_link_opens_shared_meet_and_all_event_statuses(
     assert not app.exception
 
 
-def test_stale_de_confirmation_is_cancelled_after_another_phone_update(
+def test_stale_de_tap_does_not_repeat_a_win_saved_on_another_phone(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "stale-de-confirmation.db"
@@ -1524,9 +1651,6 @@ def test_stale_de_confirmation_is_cancelled_after_another_phone_update(
     )
 
     app = open_board(event["id"], event["coach_token"], "Carmine")
-    button_named(app, "Won").click().run()
-    assert any(button.label == "Confirm Won" for button in app.button)
-
     latest = database.get_athlete(event["id"], athlete["id"])
     database.mark_result(
         event["id"],
@@ -1535,11 +1659,11 @@ def test_stale_de_confirmation_is_cancelled_after_another_phone_update(
         actor="Irina",
         expected_version=latest["version"],
     )
-    app.run()
+    button_named(app, "Won").click().run()
 
     assert not any(button.label == "Confirm Won" for button in app.button)
     assert database.get_athlete(event["id"], athlete["id"])["de_wins"] == 1
-    assert any("changed on another phone" in info.value for info in app.info)
+    assert database.get_athlete(event["id"], athlete["id"])["de_awaiting_next"] == 1
     assert not app.exception
 
 
@@ -1586,9 +1710,14 @@ def test_admin_attendance_hides_absent_and_withdrawn_then_restores(
     assert any(expander.label == "Absent · 1" for expander in app.expander)
 
     nav_named(app, "admin_nav_").set_value("My Group").run()
-    markup = "\n".join(markdown_values(app))
-    assert "OR Evan" in markup
-    assert "DING Max" not in markup
+    active_cards = "\n".join(
+        value for value in markdown_values(app) if "<div class='cc-athlete'>" in value
+    )
+    assert "OR Evan" in active_cards
+    assert "DING Max" not in active_cards
+    assert any(
+        expander.label == "Absent pool athletes · 1" for expander in app.expander
+    )
 
     nav_named(app, "admin_nav_").set_value("Setup").run()
     nav_named(app, "admin_setup_nav_").set_value("Assign").run()

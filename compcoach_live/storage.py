@@ -42,6 +42,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def de_result_now() -> str:
+    """Distinct DE outcome timestamps keep rapid result taps in queue order."""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
 def _new_token() -> str:
     return secrets.token_urlsafe(24)
 
@@ -63,6 +68,33 @@ def _normalize_name(value: str) -> str:
     """Return the stable key used by the persistent coach directory."""
 
     return " ".join(str(value or "").split()).casefold()
+
+
+
+def _coach_names(values: Iterable[Any]) -> list[str]:
+    """Normalize an ordered group without giving any coach a rank."""
+    if isinstance(values, (str, bytes)):
+        raise TypeError("Coach names must be a list.")
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = " ".join(str(value or "").split())
+        if name and _normalize_name(name) not in seen:
+            names.append(name)
+            seen.add(_normalize_name(name))
+    return names
+
+
+def assigned_coaches(assignment: Mapping[str, Any]) -> list[str]:
+    """Return the whole equal DE group, or the two ranked Pool slots."""
+    if assignment.get("phase") == "de":
+        for field in ("de_coaches", "coaches"):
+            if field in assignment:
+                return _coach_names(assignment[field] or [])
+        for field in ("de_coaches_json", "coaches_json"):
+            if field in assignment:
+                return _coach_names(_load(assignment[field], []))
+    return _coach_names([assignment.get("main_coach"), assignment.get("side_coach")])
 
 
 def _validated_date(value: str, *, label: str, allow_blank: bool = True) -> str:
@@ -94,6 +126,7 @@ ATHLETE_MUTABLE_FIELDS = {
     "time_text",
     "main_coach",
     "side_coach",
+    "de_coaches_json",
     "assignment_override",
     "active_state",
     "participation_status",
@@ -103,11 +136,16 @@ ATHLETE_MUTABLE_FIELDS = {
     "reported_by",
     "covered_by",
     "covered_at",
+    "takeover_coach",
+    "takeover_at",
+    "takeover_by",
     "pool_wins",
     "pool_losses",
     "pool_result_at",
     "pool_result_by",
     "de_wins",
+    "de_byes",
+    "de_awaiting_next",
     "last_de_result",
     "last_de_result_at",
     "last_de_result_by",
@@ -117,6 +155,24 @@ ATHLETE_MUTABLE_FIELDS = {
     "help_acknowledged_by",
     "help_acknowledged_at",
 }
+
+# Result correction deliberately excludes calls, assignments and attendance.
+# A coach may have already supplied useful information for the next bout.
+DE_RESULT_FIELDS = (
+    "active_state", "de_wins", "de_byes", "last_de_result",
+    "last_de_result_at", "last_de_result_by",
+)
+
+
+def _legacy_de_awaiting(snapshot: Mapping[str, Any]) -> int:
+    return int(
+        snapshot.get("phase") == "de"
+        and snapshot.get("active_state", "active") == "active"
+        and snapshot.get("last_de_result") in {"won", "bye"}
+        and snapshot.get("call_status", "waiting") == "waiting"
+        and not snapshot.get("covered_by")
+        and not snapshot.get("help_requested_at")
+    )
 
 
 class CompCoachDB:
@@ -165,6 +221,10 @@ class CompCoachDB:
                 CREATE TABLE IF NOT EXISTS competitions (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'closed')),
+                    ended_at TEXT,
+                    ended_by TEXT NOT NULL DEFAULT '',
                     location TEXT NOT NULL DEFAULT '',
                     start_date TEXT NOT NULL DEFAULT '',
                     end_date TEXT NOT NULL DEFAULT '',
@@ -218,6 +278,7 @@ class CompCoachDB:
                     time_text TEXT NOT NULL DEFAULT '',
                     main_coach TEXT NOT NULL DEFAULT '',
                     side_coach TEXT NOT NULL DEFAULT '',
+                    de_coaches_json TEXT NOT NULL DEFAULT '[]',
                     assignment_override INTEGER NOT NULL DEFAULT 0,
                     active_state TEXT NOT NULL DEFAULT 'active'
                         CHECK (active_state IN ('active', 'eliminated')),
@@ -230,11 +291,17 @@ class CompCoachDB:
                     reported_by TEXT NOT NULL DEFAULT '',
                     covered_by TEXT NOT NULL DEFAULT '',
                     covered_at TEXT,
+                    takeover_coach TEXT NOT NULL DEFAULT '',
+                    takeover_at TEXT,
+                    takeover_by TEXT NOT NULL DEFAULT '',
                     pool_wins INTEGER,
                     pool_losses INTEGER,
                     pool_result_at TEXT,
                     pool_result_by TEXT NOT NULL DEFAULT '',
                     de_wins INTEGER NOT NULL DEFAULT 0,
+                    de_byes INTEGER NOT NULL DEFAULT 0,
+                    de_awaiting_next INTEGER NOT NULL DEFAULT 0
+                        CHECK (de_awaiting_next IN (0, 1)),
                     last_de_result TEXT NOT NULL DEFAULT '',
                     last_de_result_at TEXT,
                     last_de_result_by TEXT NOT NULL DEFAULT '',
@@ -255,9 +322,35 @@ class CompCoachDB:
                     pod TEXT NOT NULL,
                     main_coach TEXT NOT NULL DEFAULT '',
                     side_coach TEXT NOT NULL DEFAULT '',
+                    coaches_json TEXT NOT NULL DEFAULT '[]',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(event_id, phase, pod)
                 );
+
+                CREATE TABLE IF NOT EXISTS de_bouts (
+                    id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    athlete_a_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+                    athlete_b_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+                    round_label TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'resolved', 'cancelled')),
+                    winner_id TEXT NOT NULL DEFAULT '',
+                    athlete_a_version INTEGER NOT NULL,
+                    athlete_b_version INTEGER NOT NULL,
+                    resolved_a_version INTEGER,
+                    resolved_b_version INTEGER,
+                    previous_a_json TEXT,
+                    previous_b_json TEXT,
+                    created_at TEXT NOT NULL,
+                    created_by TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    resolved_by TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_de_bouts_event_status
+                    ON de_bouts(event_id, status);
 
                 CREATE TABLE IF NOT EXISTS phase_states (
                     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -338,7 +431,7 @@ class CompCoachDB:
                     coach_id TEXT REFERENCES coaches(id) ON DELETE SET NULL,
                     coach_name TEXT NOT NULL,
                     assignment_kind TEXT NOT NULL
-                        CHECK (assignment_kind IN ('main', 'side', 'coverage')),
+                        CHECK (assignment_kind IN ('main', 'side', 'coverage', 'de_coach')),
                     target_type TEXT NOT NULL
                         CHECK (target_type IN ('athlete', 'pod')),
                     phase TEXT NOT NULL DEFAULT '',
@@ -394,17 +487,37 @@ class CompCoachDB:
             )
             # In-place migration for databases created by an earlier build.
             # SQLite does not support ADD COLUMN IF NOT EXISTS.
+            competition_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(competitions)").fetchall()
+            }
+            competition_migrations = {
+                "status": (
+                    "TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed'))"
+                ),
+                "ended_at": "TEXT",
+                "ended_by": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in competition_migrations.items():
+                if column not in competition_columns:
+                    conn.execute(f"ALTER TABLE competitions ADD COLUMN {column} {definition}")
             athlete_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(athletes)").fetchall()
             }
             migrations = {
                 "assignment_override": "INTEGER NOT NULL DEFAULT 0",
+                "de_coaches_json": "TEXT NOT NULL DEFAULT '[]'",
                 "participation_status": "TEXT NOT NULL DEFAULT 'active'",
                 "pool_wins": "INTEGER",
                 "pool_losses": "INTEGER",
                 "pool_result_at": "TEXT",
                 "pool_result_by": "TEXT NOT NULL DEFAULT ''",
                 "de_wins": "INTEGER NOT NULL DEFAULT 0",
+                "takeover_coach": "TEXT NOT NULL DEFAULT ''",
+                "takeover_at": "TEXT",
+                "takeover_by": "TEXT NOT NULL DEFAULT ''",
+                "de_byes": "INTEGER NOT NULL DEFAULT 0",
+                "de_awaiting_next": "INTEGER NOT NULL DEFAULT 0 CHECK (de_awaiting_next IN (0, 1))",
                 "last_de_result": "TEXT NOT NULL DEFAULT ''",
                 "last_de_result_at": "TEXT",
                 "last_de_result_by": "TEXT NOT NULL DEFAULT ''",
@@ -417,6 +530,31 @@ class CompCoachDB:
             for column, definition in migrations.items():
                 if column not in athlete_columns:
                     conn.execute(f"ALTER TABLE athletes ADD COLUMN {column} {definition}")
+            if "de_awaiting_next" not in athlete_columns:
+                conn.execute("""
+                    UPDATE athletes SET de_awaiting_next = 1
+                    WHERE phase = 'de' AND active_state = 'active'
+                      AND last_de_result IN ('won', 'bye')
+                      AND call_status = 'waiting' AND covered_by = ''
+                      AND help_requested_at IS NULL
+                """)
+            pod_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(pod_assignments)").fetchall()
+            }
+            if "coaches_json" not in pod_columns:
+                conn.execute("ALTER TABLE pod_assignments ADD COLUMN coaches_json TEXT NOT NULL DEFAULT '[]'")
+            self._migrate_de_history_constraint(conn)
+            # Only backfill a newly introduced column. An intentional empty
+            # group must remain empty when the app restarts.
+            if "de_coaches_json" not in athlete_columns:
+                for row in conn.execute("SELECT id, main_coach, side_coach FROM athletes WHERE phase = 'de'").fetchall():
+                    conn.execute("UPDATE athletes SET de_coaches_json = ? WHERE id = ?",
+                                 (_dump(_coach_names([row["main_coach"], row["side_coach"]])), row["id"]))
+            if "coaches_json" not in pod_columns:
+                for row in conn.execute("SELECT event_id, pod, main_coach, side_coach FROM pod_assignments WHERE phase = 'de'").fetchall():
+                    conn.execute("UPDATE pod_assignments SET coaches_json = ? WHERE event_id = ? AND phase = 'de' AND pod = ?",
+                                 (_dump(_coach_names([row["main_coach"], row["side_coach"]])), row["event_id"], row["pod"]))
+            conn.execute("UPDATE coach_assignment_history SET assignment_kind = 'de_coach' WHERE phase = 'de' AND assignment_kind IN ('main', 'side')")
             phase_state_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(phase_states)").fetchall()
@@ -716,6 +854,14 @@ class CompCoachDB:
                         (pod_row["event_id"], pod_row["phase"], pod_row["pod"]),
                     ).fetchone():
                         continue
+                    if pod_row["phase"] == "de":
+                        self._sync_de_assignment_group(
+                            conn, event_id=str(pod_row["event_id"]), athlete_id=None,
+                            target_type="pod", pod=str(pod_row["pod"]),
+                            coaches=_coach_names(_load(pod_row["coaches_json"], [])),
+                            actor="Migration", source="legacy_snapshot",
+                        )
+                        continue
                     for kind in ("main", "side"):
                         self._sync_assignment_slot(
                             conn,
@@ -785,8 +931,47 @@ class CompCoachDB:
         return data
 
     @staticmethod
-    def _athlete_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-        return dict(row) if row is not None else None
+    def _athlete_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        data = dict(row)
+        data["de_coaches"] = assigned_coaches(data) if data.get("phase") == "de" else []
+        data["de_rounds_passed"] = int(data.get("de_wins") or 0) + int(data.get("de_byes") or 0)
+        return data
+
+    @staticmethod
+    def _pod_assignment_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        data["coaches"] = assigned_coaches(data)
+        return data
+
+    @staticmethod
+    def _migrate_de_history_constraint(conn: sqlite3.Connection) -> None:
+        # PostgreSQL installs its additive constraint migration in its DDL.
+        if not isinstance(conn, sqlite3.Connection):
+            return
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'coach_assignment_history'").fetchone()
+        ddl = str(row["sql"] or "") if row else ""
+        if "'de_coach'" in ddl:
+            return
+        indexes = [str(row["sql"]) for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'coach_assignment_history' AND sql IS NOT NULL"
+        ).fetchall()]
+        updated_ddl = ddl.replace("('main', 'side', 'coverage')", "('main', 'side', 'coverage', 'de_coach')")
+        if updated_ddl == ddl:
+            raise CompCoachError("The coach history schema could not be upgraded safely.")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("ALTER TABLE coach_assignment_history RENAME TO coach_assignment_history_legacy")
+            conn.execute(updated_ddl)
+            conn.execute("INSERT INTO coach_assignment_history SELECT * FROM coach_assignment_history_legacy")
+            conn.execute("DROP TABLE coach_assignment_history_legacy")
+            for index_sql in indexes:
+                conn.execute(index_sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     @staticmethod
     def _ensure_coach_record(
@@ -1051,6 +1236,49 @@ class CompCoachDB:
         )
 
     @classmethod
+    def _sync_de_assignment_group(
+        cls, conn: sqlite3.Connection, *, event_id: str,
+        athlete_id: str | None, target_type: str, pod: str,
+        coaches: Iterable[str], actor: str, source: str,
+    ) -> None:
+        """Maintain one interval per equal coach, retaining unchanged members."""
+        names = _coach_names(coaches)
+        wanted = {_normalize_name(name): name for name in names}
+        if target_type == "athlete":
+            rows = conn.execute("""
+                SELECT * FROM coach_assignment_history
+                WHERE event_id = ? AND athlete_id = ? AND target_type = 'athlete'
+                  AND assignment_kind = 'de_coach' AND ended_at IS NULL ORDER BY id
+            """, (event_id, athlete_id)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT * FROM coach_assignment_history
+                WHERE event_id = ? AND target_type = 'pod' AND phase = 'de'
+                  AND pod = ? AND assignment_kind = 'de_coach' AND ended_at IS NULL ORDER BY id
+            """, (event_id, pod)).fetchall()
+        now = utc_now()
+        retained: set[str] = set()
+        for row in rows:
+            key = _normalize_name(str(row["coach_name"]))
+            if key in wanted and key not in retained and row["phase"] == "de" and row["pod"] == pod:
+                retained.add(key)
+            else:
+                conn.execute("UPDATE coach_assignment_history SET ended_at = ?, ended_by = ? WHERE id = ? AND ended_at IS NULL",
+                             (now, actor or "System", row["id"]))
+        for key, name in wanted.items():
+            if key in retained:
+                continue
+            coach_id, meet_id, competition_id, home_event_id, is_cross_event = cls._assignment_context(conn, event_id, name, now=now)
+            conn.execute("""
+                INSERT INTO coach_assignment_history (
+                    competition_id, meet_id, event_id, athlete_id, coach_id,
+                    coach_name, assignment_kind, target_type, phase, pod,
+                    home_event_id, is_cross_event, started_at, assigned_by, source
+                ) VALUES (?, ?, ?, ?, ?, ?, 'de_coach', ?, 'de', ?, ?, ?, ?, ?, ?)
+            """, (competition_id or None, meet_id, event_id, athlete_id, coach_id,
+                  name, target_type, pod, home_event_id, is_cross_event, now, actor or "System", source))
+
+    @classmethod
     def _sync_athlete_assignment_history(
         cls,
         conn: sqlite3.Connection,
@@ -1071,6 +1299,8 @@ class CompCoachDB:
         ):
             old_value = str((current or {}).get(field) or "")
             new_value = str(new.get(field) or "")
+            if phase == "de" and kind in {"main", "side"}:
+                new_value = ""
             context_changed = bool(current) and (
                 str(current.get("phase") or "") != phase
                 or str(current.get("pod") or "") != pod
@@ -1089,22 +1319,46 @@ class CompCoachDB:
                 actor=actor,
                 source=source,
             )
+        cls._sync_de_assignment_group(
+            conn, event_id=event_id, athlete_id=athlete_id, target_type="athlete",
+            pod=pod, coaches=assigned_coaches(new) if phase == "de" else [],
+            actor=actor, source=source,
+        )
 
     def _assert_open(self, conn: sqlite3.Connection, event_id: str) -> None:
         row = conn.execute(
             """
-            SELECT events.status AS event_status, meets.status AS meet_status
+            SELECT events.status AS event_status, meets.status AS meet_status,
+                   competitions.status AS competition_status
             FROM events
             LEFT JOIN meet_events ON meet_events.event_id = events.id
             LEFT JOIN meets ON meets.id = meet_events.meet_id
+            LEFT JOIN competitions ON competitions.id = meets.competition_id
             WHERE events.id = ?
             """,
             (event_id,),
         ).fetchone()
         if row is None:
             raise CompCoachError("Competition not found.")
-        if row["event_status"] == "locked" or row["meet_status"] == "locked":
+        if (
+            row["event_status"] == "locked"
+            or row["meet_status"] == "locked"
+            or row["competition_status"] == "closed"
+        ):
             raise EventLockedError("This competition is locked and is now read-only.")
+
+    @staticmethod
+    def _assert_competition_open(
+        conn: sqlite3.Connection, competition_id: str
+    ) -> sqlite3.Row:
+        row = conn.execute(
+            "SELECT * FROM competitions WHERE id = ?", (competition_id,)
+        ).fetchone()
+        if row is None:
+            raise CompCoachError("Competition not found.")
+        if row["status"] == "closed":
+            raise EventLockedError("This competition is closed and is now read-only.")
+        return row
 
     def _assert_meet_open(self, conn: sqlite3.Connection, meet_id: str) -> sqlite3.Row:
         row = conn.execute("SELECT * FROM meets WHERE id = ?", (meet_id,)).fetchone()
@@ -1112,6 +1366,8 @@ class CompCoachDB:
             raise CompCoachError("Competition group not found.")
         if row["status"] == "locked":
             raise EventLockedError("This competition group is locked and is now read-only.")
+        if row["competition_id"]:
+            self._assert_competition_open(conn, row["competition_id"])
         return row
 
     @staticmethod
@@ -1183,10 +1439,215 @@ class CompCoachDB:
             )
 
     @staticmethod
+    def _mark_released_coaches_available(
+        conn: sqlite3.Connection,
+        meet_id: str,
+        coaches: Iterable[str],
+        actor: str,
+        *,
+        refresh_available_since: bool = False,
+    ) -> None:
+        """Release actual bout coverage or an accepted takeover atomically.
+
+        Planned pod assignments are retained and do not imply that a coach is
+        physically busy. Remaining live coverage or a pending takeover always
+        wins over availability, including legacy records from older versions.
+        """
+        meet = conn.execute(
+            "SELECT active_coaches_json FROM meets WHERE id = ?", (meet_id,)
+        ).fetchone()
+        if meet is None:
+            raise CompCoachError("Competition group not found.")
+        active = {str(name).strip() for name in _load(meet["active_coaches_json"], [])}
+        names = list(dict.fromkeys(str(name or "").strip() for name in coaches if str(name or "").strip()))
+        now = utc_now()
+        for coach in names:
+            if coach not in active:
+                continue
+            busy = conn.execute("""
+                SELECT 1 FROM athletes
+                JOIN meet_events ON meet_events.event_id = athletes.event_id
+                WHERE meet_events.meet_id = ?
+                  AND (athletes.covered_by = ? OR athletes.takeover_coach = ?)
+                  AND athletes.active_state = 'active'
+                  AND athletes.participation_status = 'active' LIMIT 1
+            """, (meet_id, coach, coach)).fetchone()
+            if busy:
+                continue
+            stored = conn.execute(
+                "SELECT is_available FROM coach_availability WHERE meet_id = ? AND coach_name = ?",
+                (meet_id, coach),
+            ).fetchone()
+            # A result may also release this coach through its takeover cleanup.
+            # Keep that release timestamp and advance the revision once. The
+            # first promise removal refreshes legacy flags from older versions.
+            if stored and stored["is_available"] and not refresh_available_since:
+                continue
+            conn.execute("""
+                INSERT INTO coach_availability (
+                    meet_id,coach_name,is_available,available_since,updated_at,updated_by,version
+                ) VALUES (?,?,1,?,?,?,1)
+                ON CONFLICT(meet_id,coach_name) DO UPDATE SET
+                    is_available = 1,
+                    available_since = excluded.available_since,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by,
+                    version = coach_availability.version + 1
+            """, (meet_id, coach, now, now, str(actor or "System")))
+
+    def _sync_takeover_availability(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        current: Mapping[str, Any],
+        new: Mapping[str, Any],
+        actor: str,
+    ) -> None:
+        """Consume or release a pending promise in the athlete's transaction."""
+        previous_coach = str(current.get("takeover_coach") or "")
+        next_coach = str(new.get("takeover_coach") or "")
+        if previous_coach == next_coach:
+            return
+        meet = self._meet_for_event(conn, str(new["event_id"]))
+        if previous_coach:
+            self._mark_released_coaches_available(
+                conn, meet["id"], [previous_coach], actor,
+                refresh_available_since=True,
+            )
+        if next_coach:
+            # A takeover reserves the coach immediately without creating
+            # physical coverage or starting its timer. Stale availability taps
+            # must fail the same revision guard used by coverage and assignment.
+            self._clear_available_coaches(conn, meet["id"], [next_coach], actor)
+
+    def _assert_coverage_free(
+        self, conn: sqlite3.Connection, *, event_id: str,
+        athlete_id: str, coach: str,
+    ) -> None:
+        """An old Undo cannot resurrect coverage while that coach is elsewhere."""
+        if not coach:
+            return
+        meet = self._meet_for_event(conn, event_id)
+        other = conn.execute("""
+            SELECT athletes.name FROM athletes
+            JOIN meet_events ON meet_events.event_id = athletes.event_id
+            WHERE meet_events.meet_id = ? AND athletes.covered_by = ?
+              AND athletes.id <> ? AND athletes.active_state = 'active'
+              AND athletes.participation_status = 'active' LIMIT 1
+        """, (meet["id"], coach, athlete_id)).fetchone()
+        if other:
+            raise ConcurrentUpdateError(
+                f"{coach} is now covering {other['name']}. Use result correction to restore the athlete without restoring an old coverage."
+            )
+
+    def _assert_takeover_free(
+        self, conn: sqlite3.Connection, *, event_id: str,
+        athlete_id: str, coach: str,
+        expected_coach_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Validate a temporary responsibility without starting a busy timer."""
+        meet = self._meet_for_event(conn, event_id)
+        active = {str(name).strip() for name in _load(meet["active_coaches_json"], [])}
+        if coach not in active:
+            raise CompCoachError(f"{coach} is not an active coach for this competition.")
+        row = conn.execute(
+            "SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)
+        ).fetchone()
+        if row is None:
+            raise CompCoachError("Athlete not found.")
+        current = dict(row)
+        if current["active_state"] != "active" or current.get("participation_status", "active") != "active":
+            raise ConcurrentUpdateError("This athlete is no longer active. The takeover was not saved.")
+        if current.get("covered_by"):
+            raise ConcurrentUpdateError(f"Already covered by {current['covered_by']}.")
+        if current.get("takeover_coach") and current["takeover_coach"] != coach:
+            raise ConcurrentUpdateError(f"{current['takeover_coach']} has already taken responsibility for this athlete.")
+        if expected_coach_version is not None:
+            availability = conn.execute(
+                "SELECT version FROM coach_availability WHERE meet_id = ? AND coach_name = ?",
+                (meet["id"], coach),
+            ).fetchone()
+            version = int(availability["version"]) if availability else 0
+            if version != int(expected_coach_version):
+                raise ConcurrentUpdateError("This coach's situation changed on another phone. Review the current coverage before taking over.")
+        busy = conn.execute("""
+            SELECT athletes.name FROM athletes
+            JOIN meet_events ON meet_events.event_id = athletes.event_id
+            WHERE meet_events.meet_id = ? AND athletes.covered_by = ?
+              AND athletes.active_state = 'active'
+              AND athletes.participation_status = 'active' LIMIT 1
+        """, (meet["id"], coach)).fetchone()
+        if busy:
+            raise ConcurrentUpdateError(f"{coach} is already covering {busy['name']}. Release coverage or record the result first.")
+        return current
+
+    def _set_live_coverage(
+        self, conn: sqlite3.Connection, *, event_id: str,
+        current: Mapping[str, Any], coach: str, actor: str,
+        changes: dict[str, Any], action: str,
+        expected_version: int | None = None,
+        expected_coach_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Assign one physical coach to one athlete across the competition day.
+
+        All handoffs and their history are part of the same write transaction.
+        A stale target revision rolls back the handoff as well as the target.
+        """
+        coach = str(coach or "").strip()
+        meet = self._meet_for_event(conn, event_id)
+        if coach:
+            if expected_coach_version is not None:
+                availability = conn.execute(
+                    "SELECT version FROM coach_availability WHERE meet_id = ? AND coach_name = ?",
+                    (meet["id"], coach),
+                ).fetchone()
+                version = int(availability["version"]) if availability else 0
+                if version != int(expected_coach_version):
+                    raise ConcurrentUpdateError("This coach's situation changed on another phone. Review the current coverage before saving.")
+            active = {str(name).strip() for name in _load(meet["active_coaches_json"], [])}
+            active.update(str(name).strip() for name in _load(meet["coordinators_json"], []))
+            if coach not in active:
+                raise CompCoachError(f"{coach} is not an active coach for this competition.")
+            other_rows = conn.execute("""
+                SELECT athletes.* FROM athletes
+                JOIN meet_events ON meet_events.event_id = athletes.event_id
+                WHERE meet_events.meet_id = ? AND athletes.covered_by = ?
+                  AND athletes.id <> ? AND athletes.active_state = 'active'
+                  AND athletes.participation_status = 'active'
+            """, (meet["id"], coach, current["id"])).fetchall()
+            for other in other_rows:
+                self._assert_open(conn, other["event_id"])
+                self._update_athlete(
+                    conn, event_id=other["event_id"], athlete_id=other["id"],
+                    changes={"covered_by": "", "covered_at": None},
+                    action="coverage_handoff", actor=actor,
+                    expected_version=int(other["version"]), require_active=True,
+                )
+        previous_coach = str(current.get("covered_by") or "")
+        changes = dict(changes)
+        changes.update(
+            covered_by=coach,
+            covered_at=(current.get("covered_at") if coach and coach == previous_coach else utc_now() if coach else None),
+        )
+        if coach:
+            changes["de_awaiting_next"] = 0
+        result = self._update_athlete(
+            conn, event_id=event_id, athlete_id=current["id"], changes=changes,
+            action=action, actor=actor, expected_version=expected_version,
+            require_active=True,
+        )
+        if previous_coach and previous_coach != coach:
+            self._mark_released_coaches_available(conn, meet["id"], [previous_coach], actor)
+        if coach:
+            self._clear_available_coaches(conn, meet["id"], [coach], actor)
+        return result
+
     def _delete_removed_coach_availability(
+        self,
         conn: sqlite3.Connection,
         meet_id: str,
         active_coaches: Iterable[str],
+        actor: str = "Staff setup",
     ) -> None:
         names = list(
             dict.fromkeys(
@@ -1195,6 +1656,19 @@ class CompCoachDB:
                 if str(coach or "").strip()
             )
         )
+        pending = conn.execute("""
+            SELECT athletes.* FROM athletes
+            JOIN meet_events ON meet_events.event_id = athletes.event_id
+            WHERE meet_events.meet_id = ? AND athletes.takeover_coach <> ''
+        """, (meet_id,)).fetchall()
+        for athlete in pending:
+            if str(athlete["takeover_coach"]) not in names:
+                self._update_athlete(
+                    conn, event_id=athlete["event_id"], athlete_id=athlete["id"],
+                    changes={"takeover_coach": "", "takeover_at": None, "takeover_by": ""},
+                    action="takeover_staff_removed", actor=actor,
+                    expected_version=int(athlete["version"]),
+                )
         if not names:
             conn.execute(
                 "DELETE FROM coach_availability WHERE meet_id = ?", (meet_id,)
@@ -1284,16 +1758,22 @@ class CompCoachDB:
             )
         return self.get_competition(competition_id)  # type: ignore[return-value]
 
-    def list_competitions(self) -> list[dict[str, Any]]:
+    def list_competitions(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        """List all competitions, optionally filtering operational or archived ones."""
+        if status not in {None, "open", "closed"}:
+            raise ValueError("Competition status must be open or closed.")
+        clause = "WHERE competitions.status = ?" if status is not None else ""
         with self._connection() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT competitions.*,
                        (SELECT COUNT(*) FROM meets
                         WHERE meets.competition_id = competitions.id) AS day_count
                 FROM competitions
+                {clause}
                 ORDER BY start_date DESC, created_at DESC, id DESC
-                """
+                """,
+                (status,) if status is not None else (),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1544,12 +2024,7 @@ class CompCoachDB:
             conn.execute("BEGIN IMMEDIATE")
             resolved_competition_id = str(competition_id or "").strip()
             if resolved_competition_id:
-                parent = conn.execute(
-                    "SELECT * FROM competitions WHERE id = ?",
-                    (resolved_competition_id,),
-                ).fetchone()
-                if parent is None:
-                    raise CompCoachError("Competition not found.")
+                parent = self._assert_competition_open(conn, resolved_competition_id)
                 if clean_day_status == "active" and conn.execute(
                     """
                     SELECT 1 FROM meets
@@ -2059,12 +2534,14 @@ class CompCoachDB:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             meet = conn.execute(
-                "SELECT ended_at FROM meets WHERE id = ?", (meet_id,)
+                "SELECT ended_at, competition_id FROM meets WHERE id = ?", (meet_id,)
             ).fetchone()
             if meet is None:
                 raise CompCoachError("Competition group not found.")
             if not locked and meet["ended_at"]:
                 raise CompCoachError("An ended competition day cannot be reopened.")
+            if not locked and meet["competition_id"]:
+                self._assert_competition_open(conn, meet["competition_id"])
             conn.execute(
                 "UPDATE meets SET status = ?, updated_at = ? WHERE id = ?",
                 (status, now, meet_id),
@@ -2104,6 +2581,8 @@ class CompCoachDB:
                 raise CompCoachError("Competition group not found.")
             if meet["ended_at"] or meet["day_status"] == "closed":
                 raise CompCoachError("A closed competition day cannot be reactivated.")
+            if meet["competition_id"]:
+                self._assert_competition_open(conn, meet["competition_id"])
             now = utc_now()
             if clean_status == "active":
                 conn.execute(
@@ -2140,12 +2619,77 @@ class CompCoachDB:
                        (SELECT COUNT(*) FROM meet_events
                         WHERE meet_events.meet_id = meets.id) AS event_count
                 FROM meets
-                WHERE competition_id = ? AND day_status = 'active'
+                JOIN competitions ON competitions.id = meets.competition_id
+                WHERE meets.competition_id = ? AND day_status = 'active'
+                  AND meets.ended_at IS NULL AND competitions.status = 'open'
                 LIMIT 1
                 """,
                 (competition_id,),
             ).fetchone()
         return self._meet_dict(row)
+
+    def finish_competition(
+        self, competition_id: str, actor: str
+    ) -> dict[str, Any]:
+        """Archive a whole competition while retaining every historical record.
+
+        Closing future scheduled days prevents old links or a later activation
+        from making the concluded competition live again. Retrying keeps the
+        original closure audit values and repairs any operational status drift.
+        """
+        clean_actor = str(actor or "").strip()
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent = conn.execute(
+                "SELECT * FROM competitions WHERE id = ?", (competition_id,)
+            ).fetchone()
+            if parent is None:
+                raise CompCoachError("Competition not found.")
+            ended_at = parent["ended_at"] or utc_now()
+            ended_by = parent["ended_by"] if parent["ended_at"] else clean_actor
+            conn.execute(
+                """
+                UPDATE competitions SET status = 'closed', ended_at = ?,
+                    ended_by = ?, updated_at = ? WHERE id = ?
+                """,
+                (ended_at, ended_by, ended_at, competition_id),
+            )
+            conn.execute(
+                """
+                UPDATE meets SET status = 'locked', day_status = 'closed',
+                    ended_by = CASE WHEN ended_at IS NULL THEN ? ELSE ended_by END,
+                    ended_at = COALESCE(ended_at, ?),
+                    updated_at = CASE WHEN ended_at IS NULL THEN ? ELSE updated_at END
+                WHERE competition_id = ?
+                """,
+                (ended_by, ended_at, ended_at, competition_id),
+            )
+            conn.execute(
+                """
+                UPDATE events SET status = 'locked', updated_at = ?
+                WHERE id IN (
+                    SELECT meet_events.event_id FROM meet_events
+                    JOIN meets ON meets.id = meet_events.meet_id
+                    WHERE meets.competition_id = ?
+                )
+                """,
+                (ended_at, competition_id),
+            )
+            conn.execute(
+                """
+                UPDATE coach_assignment_history SET ended_at = ?, ended_by = ?
+                WHERE ended_at IS NULL AND (
+                    competition_id = ? OR meet_id IN (
+                        SELECT id FROM meets WHERE competition_id = ?
+                    )
+                )
+                """,
+                (ended_at, ended_by, competition_id, competition_id),
+            )
+            conn.commit()
+        return self.get_competition(competition_id)  # type: ignore[return-value]
 
     def finish_meet(self, meet_id: str, actor: str) -> dict[str, Any]:
         """End a competition day and make every child event read-only."""
@@ -2240,6 +2784,8 @@ class CompCoachDB:
             ).fetchone()
             if source is None:
                 raise CompCoachError("Competition group not found.")
+            if source["competition_id"]:
+                self._assert_competition_open(conn, source["competition_id"])
 
             existing = conn.execute(
                 "SELECT id FROM meets WHERE prepared_from_meet_id = ?",
@@ -2516,7 +3062,7 @@ class CompCoachDB:
             now = utc_now()
             membership = conn.execute(
                 """
-                SELECT meet_events.meet_id, meets.ended_at
+                SELECT meet_events.meet_id, meets.ended_at, meets.competition_id
                 FROM meet_events
                 JOIN meets ON meets.id = meet_events.meet_id
                 WHERE meet_events.event_id = ?
@@ -2527,6 +3073,8 @@ class CompCoachDB:
                 meet_id = membership["meet_id"]
                 if not locked and membership["ended_at"]:
                     raise CompCoachError("An ended competition day cannot be reopened.")
+                if not locked and membership["competition_id"]:
+                    self._assert_competition_open(conn, membership["competition_id"])
                 conn.execute(
                     "UPDATE meets SET status = ?, updated_at = ? WHERE id = ?",
                     (status, now, meet_id),
@@ -3162,57 +3710,44 @@ class CompCoachDB:
             "main_coach",
             "side_coach",
             "covered_by",
+            "takeover_coach",
             "help_requested_by",
             "help_acknowledged_by",
         )
         athletes = conn.execute(
-            f"SELECT id, {', '.join(athlete_fields)} FROM athletes"
+            f"SELECT id, de_coaches_json, {', '.join(athlete_fields)} FROM athletes"
         ).fetchall()
         for athlete in athletes:
-            changed_fields = [
-                field
-                for field in athlete_fields
+            changes = {
+                field: new_name for field in athlete_fields
                 if _normalize_name(str(athlete[field] or "")) == old_key
-            ]
-            if not changed_fields:
+            }
+            names = _coach_names(_load(athlete["de_coaches_json"], []))
+            renamed = _coach_names(new_name if _normalize_name(name) == old_key else name for name in names)
+            if renamed != names:
+                changes["de_coaches_json"] = _dump(renamed)
+            if not changes:
                 continue
-            set_clause = ", ".join(f"{field} = ?" for field in changed_fields)
-            conn.execute(
-                f"""
-                UPDATE athletes SET {set_clause}, version = version + 1,
-                    updated_at = ? WHERE id = ?
-                """,
-                (*([new_name] * len(changed_fields)), now, athlete["id"]),
-            )
+            set_clause = ", ".join(f"{field} = ?" for field in changes)
+            conn.execute(f"UPDATE athletes SET {set_clause}, version = version + 1, updated_at = ? WHERE id = ?",
+                         (*changes.values(), now, athlete["id"]))
 
         pod_fields = ("main_coach", "side_coach")
-        assignments = conn.execute(
-            """
-            SELECT event_id, phase, pod, main_coach, side_coach
-            FROM pod_assignments
-            """
-        ).fetchall()
+        assignments = conn.execute("SELECT * FROM pod_assignments").fetchall()
         for assignment in assignments:
-            changed_fields = [
-                field
-                for field in pod_fields
+            changes = {
+                field: new_name for field in pod_fields
                 if _normalize_name(str(assignment[field] or "")) == old_key
-            ]
-            if not changed_fields:
+            }
+            names = _coach_names(_load(assignment["coaches_json"], []))
+            renamed = _coach_names(new_name if _normalize_name(name) == old_key else name for name in names)
+            if renamed != names:
+                changes["coaches_json"] = _dump(renamed)
+            if not changes:
                 continue
-            set_clause = ", ".join(f"{field} = ?" for field in changed_fields)
-            conn.execute(
-                f"""
-                UPDATE pod_assignments SET {set_clause}
-                WHERE event_id = ? AND phase = ? AND pod = ?
-                """,
-                (
-                    *([new_name] * len(changed_fields)),
-                    assignment["event_id"],
-                    assignment["phase"],
-                    assignment["pod"],
-                ),
-            )
+            set_clause = ", ".join(f"{field} = ?" for field in changes)
+            conn.execute(f"UPDATE pod_assignments SET {set_clause}, updated_at = ? WHERE event_id = ? AND phase = ? AND pod = ?",
+                         (*changes.values(), now, assignment["event_id"], assignment["phase"], assignment["pod"]))
 
         # Open intervals describe the current assignment, so their display
         # label follows the canonical name while the stable ID and interval
@@ -3519,6 +4054,7 @@ class CompCoachDB:
                     meet_id,
                 ),
             )
+            self._delete_removed_coach_availability(conn, meet_id, active_names, clean_actor)
             conn.commit()
         return next(
             row for row in self.list_day_coaches(meet_id) if row["coach_id"] == coach_id
@@ -3649,7 +4185,7 @@ class CompCoachDB:
                 """,
                 (meet_id,),
             ).fetchall()
-            athletes = [dict(row) for row in athlete_rows]
+            athletes = [self._athlete_dict(row) for row in athlete_rows]
 
         result: list[dict[str, Any]] = []
         for coach in coaches:
@@ -3658,10 +4194,7 @@ class CompCoachDB:
             unfinished_ids: set[str] = set()
             for athlete in athletes:
                 athlete_id = str(athlete["id"])
-                planned = coach in {
-                    athlete.get("main_coach"),
-                    athlete.get("side_coach"),
-                }
+                planned = coach in assigned_coaches(athlete)
                 active = (
                     athlete.get("active_state") == "active"
                     and athlete.get("participation_status", "active") == "active"
@@ -3669,6 +4202,7 @@ class CompCoachDB:
                 unresolved_help = bool(athlete.get("help_requested_at"))
                 temporary = active and (
                     athlete.get("covered_by") == coach
+                    or athlete.get("takeover_coach") == coach
                     or (
                         unresolved_help
                         and coach
@@ -3702,7 +4236,23 @@ class CompCoachDB:
                     unfinished_ids.add(athlete_id)
 
             row = stored.get(coach)
-            is_available = bool(row["is_available"]) if row else False
+            covered = [
+                athlete for athlete in athletes
+                if athlete.get("covered_by") == coach
+                and athlete.get("active_state") == "active"
+                and athlete.get("participation_status", "active") == "active"
+            ]
+            covered.sort(key=lambda athlete: (str(athlete.get("covered_at") or ""), str(athlete["id"])), reverse=True)
+            busy = covered[0] if covered else None
+            takeovers = [
+                athlete for athlete in athletes
+                if athlete.get("takeover_coach") == coach
+                and athlete.get("active_state") == "active"
+                and athlete.get("participation_status", "active") == "active"
+            ]
+            takeovers.sort(key=lambda athlete: (str(athlete.get("takeover_at") or ""), str(athlete["id"])), reverse=True)
+            takeover = takeovers[0] if takeovers else None
+            is_available = bool(row["is_available"]) and not busy and not takeover if row else False
             assigned_count = len(assigned_ids)
             unfinished_count = len(unfinished_ids)
             result.append(
@@ -3710,12 +4260,26 @@ class CompCoachDB:
                     "meet_id": meet_id,
                     "coach_name": coach,
                     "is_available": is_available,
-                    "available_since": row["available_since"] if row else None,
+                    "is_busy": bool(busy),
+                    "busy_athlete_id": busy["id"] if busy else "",
+                    "busy_athlete_name": busy["name"] if busy else "",
+                    "busy_event_id": busy["event_id"] if busy else "",
+                    "busy_location": busy.get("live_location", "") if busy else "",
+                    "busy_since": busy.get("covered_at") if busy else None,
+                    "busy_count": len(covered),
+                    "is_committed": bool(takeover),
+                    "takeover_athlete_id": takeover["id"] if takeover else "",
+                    "takeover_athlete_name": takeover["name"] if takeover else "",
+                    "takeover_event_id": takeover["event_id"] if takeover else "",
+                    "takeover_location": takeover.get("live_location", "") if takeover else "",
+                    "takeover_since": takeover.get("takeover_at") if takeover else None,
+                    "available_since": row["available_since"] if row and is_available else None,
                     "updated_at": row["updated_at"] if row else None,
                     "updated_by": row["updated_by"] if row else "",
                     "version": int(row["version"]) if row else 0,
                     "assigned_count": assigned_count,
                     "temporary_count": len(temporary_ids),
+                    "takeover_count": len(takeovers),
                     "unfinished_count": unfinished_count,
                     "suggested_available": bool(
                         assigned_count and unfinished_count == 0
@@ -3760,6 +4324,28 @@ class CompCoachDB:
             }
             if coach not in active_coaches:
                 raise CompCoachError(f"{coach} is not an active coach for this competition.")
+            if available:
+                busy = conn.execute("""
+                    SELECT athletes.name FROM athletes
+                    JOIN meet_events ON meet_events.event_id = athletes.event_id
+                    WHERE meet_events.meet_id = ? AND athletes.covered_by = ?
+                      AND athletes.active_state = 'active'
+                      AND athletes.participation_status = 'active' LIMIT 1
+                """, (meet_id, coach)).fetchone()
+                if busy:
+                    raise CompCoachError(f"{coach} is still covering {busy['name']}. Release coverage or record the bout result first.")
+                takeover = conn.execute("""
+                    SELECT athletes.name FROM athletes
+                    JOIN meet_events ON meet_events.event_id = athletes.event_id
+                    WHERE meet_events.meet_id = ? AND athletes.takeover_coach = ?
+                      AND athletes.active_state = 'active'
+                      AND athletes.participation_status = 'active' LIMIT 1
+                """, (meet_id, coach)).fetchone()
+                if takeover:
+                    raise CompCoachError(
+                        f"{coach} has taken responsibility for {takeover['name']}. "
+                        "Release the takeover or record the bout result first."
+                    )
             row = conn.execute(
                 """
                 SELECT * FROM coach_availability
@@ -3839,7 +4425,7 @@ class CompCoachDB:
         sql += " ORDER BY phase, pod"
         with self._connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        return [self._pod_assignment_dict(row) for row in rows]
 
     def deploy_available_coach_to_pod(
         self,
@@ -3851,7 +4437,11 @@ class CompCoachDB:
         expected_availability_version: int,
         replace_existing: bool = False,
     ) -> dict[str, Any]:
-        """Atomically consume availability and add a DE Side/support coach."""
+        """Atomically consume availability and append one equal DE coach.
+
+        ``replace_existing`` is retained for old clients; DE groups are never
+        reduced when an available coach joins them.
+        """
 
         pod = str(pod or "").strip().upper()
         coach = str(coach or "").strip()
@@ -3899,6 +4489,15 @@ class CompCoachDB:
                     f"{coach} is no longer marked available."
                 )
 
+            if conn.execute("""
+                SELECT 1 FROM athletes
+                JOIN meet_events ON meet_events.event_id = athletes.event_id
+                WHERE meet_events.meet_id = ?
+                  AND (athletes.covered_by = ? OR athletes.takeover_coach = ?)
+                  AND athletes.active_state = 'active'
+                  AND athletes.participation_status = 'active' LIMIT 1
+            """, (meet["id"], coach, coach)).fetchone():
+                raise ConcurrentUpdateError(f"{coach} is covering or has taken responsibility for another athlete and is no longer available.")
             assignment = conn.execute(
                 """
                 SELECT * FROM pod_assignments
@@ -3906,74 +4505,21 @@ class CompCoachDB:
                 """,
                 (event_id, pod),
             ).fetchone()
-            previous_main = str(assignment["main_coach"] or "") if assignment else ""
-            previous_side = str(assignment["side_coach"] or "") if assignment else ""
-            if previous_main == coach:
-                raise CompCoachError(f"{coach} is already the Main coach for Pod {pod}.")
-            if previous_side and previous_side != coach and not replace_existing:
-                raise CompCoachError(
-                    f"Pod {pod} already has Side coach {previous_side}. "
-                    "Confirm replacement before deploying another coach."
-                )
-
-            rows = conn.execute(
-                """
-                SELECT * FROM athletes
-                WHERE event_id = ? AND phase = 'de' AND pod = ?
+            previous_coaches = assigned_coaches(dict(assignment)) if assignment else []
+            if _normalize_name(coach) in {_normalize_name(name) for name in previous_coaches}:
+                raise CompCoachError(f"{coach} is already assigned to Pod {pod}.")
+            rows = conn.execute("""
+                SELECT id FROM athletes WHERE event_id = ? AND phase = 'de' AND pod = ?
                   AND active_state = 'active' AND participation_status = 'active'
-                ORDER BY id
-                """,
-                (event_id, pod),
-            ).fetchall()
+            """, (event_id, pod)).fetchall()
             if not rows:
-                raise CompCoachError(
-                    f"Pod {pod} has no active Direct Elimination athletes."
-                )
-
+                raise CompCoachError(f"Pod {pod} has no active Direct Elimination athletes.")
             now = utc_now()
-            conn.execute(
-                """
-                INSERT INTO pod_assignments (
-                    event_id, phase, pod, main_coach, side_coach, updated_at
-                ) VALUES (?, 'de', ?, ?, ?, ?)
-                ON CONFLICT(event_id, phase, pod) DO UPDATE SET
-                    side_coach = excluded.side_coach,
-                    updated_at = excluded.updated_at
-                """,
-                (event_id, pod, previous_main, coach, now),
+            coaches = _coach_names([*previous_coaches, coach])
+            updated, exceptions_kept = self._assign_de_pod_group(
+                conn, event_id=event_id, pod=pod, coaches=coaches,
+                actor=actor, source="deploy", active_only=True,
             )
-            self._sync_assignment_slot(
-                conn,
-                event_id=event_id,
-                athlete_id=None,
-                target_type="pod",
-                assignment_kind="side",
-                coach_name=coach,
-                phase="de",
-                pod=pod,
-                actor=actor,
-                source="deploy",
-            )
-            updated = 0
-            exceptions_kept = 0
-            for stored_athlete in rows:
-                athlete = dict(stored_athlete)
-                if bool(athlete.get("assignment_override")):
-                    exceptions_kept += 1
-                    continue
-                if athlete.get("side_coach") == coach:
-                    continue
-                self._update_athlete(
-                    conn,
-                    event_id=event_id,
-                    athlete_id=athlete["id"],
-                    changes={"side_coach": coach},
-                    action="pod_assignment",
-                    actor=actor,
-                    expected_version=int(athlete["version"]),
-                    require_active=True,
-                )
-                updated += 1
 
             availability_cursor = conn.execute(
                 """
@@ -4006,9 +4552,10 @@ class CompCoachDB:
             "phase": "de",
             "pod": pod,
             "coach": coach,
-            "main_coach": previous_main,
-            "side_coach": coach,
-            "previous_side": previous_side,
+            "coaches": coaches,
+            "main_coach": coaches[0] if coaches else "",
+            "side_coach": coaches[1] if len(coaches) > 1 else "",
+            "previous_side": previous_coaches[1] if len(previous_coaches) > 1 else "",
             "updated": updated,
             "exceptions_kept": exceptions_kept,
             "availability_version": expected_availability_version + 1,
@@ -4062,7 +4609,7 @@ class CompCoachDB:
         sql += " ORDER BY active_state, pod, source_strip, pool_no, name"
         with self._connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        return [self._athlete_dict(row) for row in rows]
 
     def get_athlete(self, event_id: str, athlete_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
@@ -4210,7 +4757,7 @@ class CompCoachDB:
                 if incoming_pod:
                     assignment = conn.execute(
                         """
-                        SELECT main_coach, side_coach FROM pod_assignments
+                        SELECT * FROM pod_assignments
                         WHERE event_id = ? AND phase = ? AND pod = ?
                         """,
                         (event_id, phase, incoming_pod),
@@ -4220,13 +4767,14 @@ class CompCoachDB:
                     athlete_id = uuid4().hex
                     main_coach = assignment["main_coach"] if assignment else ""
                     side_coach = assignment["side_coach"] if assignment else ""
+                    de_coaches_json = _dump(assigned_coaches(dict(assignment))) if phase == "de" and assignment else "[]"
                     conn.execute(
                         """
                         INSERT INTO athletes (
                             id, event_id, athlete_key, name, phase, pool_no, pod,
-                            source_strip, time_text, main_coach, side_coach,
+                            source_strip, time_text, main_coach, side_coach, de_coaches_json,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             athlete_id,
@@ -4240,6 +4788,7 @@ class CompCoachDB:
                             incoming_time,
                             main_coach,
                             side_coach,
+                            de_coaches_json,
                             now,
                             now,
                         ),
@@ -4265,11 +4814,7 @@ class CompCoachDB:
                         source="import_added",
                     )
                     if assignment:
-                        inherited_coaches.update(
-                            str(assignment[field] or "").strip()
-                            for field in ("main_coach", "side_coach")
-                            if str(assignment[field] or "").strip()
-                        )
+                        inherited_coaches.update(assigned_coaches(dict(assignment)))
                     stats["added"] += 1
                     continue
 
@@ -4293,6 +4838,7 @@ class CompCoachDB:
                             "time_text": incoming_time,
                             "main_coach": "",
                             "side_coach": "",
+                            "de_coaches_json": "[]",
                             "assignment_override": 0,
                             "active_state": "active",
                             "call_status": "waiting",
@@ -4301,7 +4847,12 @@ class CompCoachDB:
                             "reported_by": "",
                             "covered_by": "",
                             "covered_at": None,
+                            "takeover_coach": "",
+                            "takeover_at": None,
+                            "takeover_by": "",
                             "de_wins": 0,
+                            "de_byes": 0,
+                            "de_awaiting_next": 0,
                             "last_de_result": "",
                             "last_de_result_at": None,
                             "last_de_result_by": "",
@@ -4329,10 +4880,12 @@ class CompCoachDB:
                     if assignment:
                         changes["main_coach"] = assignment["main_coach"]
                         changes["side_coach"] = assignment["side_coach"]
+                        changes["de_coaches_json"] = _dump(assigned_coaches(dict(assignment))) if phase == "de" else "[]"
                     elif phase_changed or pod_changed:
                         # Do not retain coaches inherited from the previous pod.
                         changes["main_coach"] = ""
                         changes["side_coach"] = ""
+                        changes["de_coaches_json"] = "[]"
 
                 changed = any(current.get(key) != value for key, value in changes.items())
                 if not changed:
@@ -4346,15 +4899,11 @@ class CompCoachDB:
                     or pod_changed
                     or any(
                         changes.get(field, current.get(field)) != current.get(field)
-                        for field in ("main_coach", "side_coach")
+                        for field in ("main_coach", "side_coach", "de_coaches_json")
                     )
                 )
                 if resulting_active and inherited_assignment_changed:
-                    inherited_coaches.update(
-                        str(changes.get(field, current.get(field)) or "").strip()
-                        for field in ("main_coach", "side_coach")
-                        if str(changes.get(field, current.get(field)) or "").strip()
-                    )
+                    inherited_coaches.update(assigned_coaches({**current, **changes}))
                 new_version = int(current["version"]) + 1
                 set_clause = ", ".join(f"{key} = ?" for key in changes)
                 conn.execute(
@@ -4381,6 +4930,9 @@ class CompCoachDB:
                     new=new,
                     version_after=new_version,
                 )
+                self._sync_takeover_availability(
+                    conn, current=current, new=new, actor=actor
+                )
                 stats["updated"] += 1
 
             for athlete in non_advancers:
@@ -4390,6 +4942,7 @@ class CompCoachDB:
                     athlete_id=athlete["id"],
                     changes={
                         "active_state": "eliminated",
+                        "de_awaiting_next": 0,
                         "call_status": "waiting",
                         "live_location": "",
                         "reported_at": None,
@@ -4448,8 +5001,48 @@ class CompCoachDB:
                 f"{current['name']} is no longer active. The update was not saved."
             )
         safe_changes = {key: value for key, value in changes.items() if key in ATHLETE_MUTABLE_FIELDS}
+        # A promise to take the next bout is distinct from physical coverage.
+        # Results, attendance changes and phase changes end that promise, but
+        # ordinary call/assignment edits preserve it.
+        if (
+            action in {"won", "lost", "bye", "out", "pool_result", "de_bout_result", "de_import_not_advanced"}
+            or ("phase" in safe_changes and safe_changes["phase"] != current["phase"])
+            or safe_changes.get("participation_status", "active") != "active"
+            or safe_changes.get("active_state", "active") != "active"
+            or bool(safe_changes.get("covered_by"))
+        ):
+            safe_changes.update(takeover_coach="", takeover_at=None, takeover_by="")
+        elif safe_changes.get("takeover_coach"):
+            self._assert_takeover_free(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                coach=str(safe_changes["takeover_coach"]),
+            )
+        resulting_phase = str(safe_changes.get("phase", current["phase"]))
+        if resulting_phase == "de":
+            if "de_coaches_json" in safe_changes:
+                coaches = _coach_names(_load(safe_changes["de_coaches_json"], []))
+            elif any(field in safe_changes for field in ("main_coach", "side_coach")):
+                coaches = _coach_names([
+                    safe_changes.get("main_coach", current.get("main_coach")),
+                    safe_changes.get("side_coach", current.get("side_coach")),
+                    *assigned_coaches(current)[2:],
+                ])
+            else:
+                coaches = None
+            if coaches is not None:
+                safe_changes.update(de_coaches_json=_dump(coaches),
+                                    main_coach=coaches[0] if coaches else "",
+                                    side_coach=coaches[1] if len(coaches) > 1 else "")
+        elif safe_changes.get("phase") == "pools":
+            safe_changes["de_coaches_json"] = "[]"
+            safe_changes["de_awaiting_next"] = 0
         if not safe_changes:
-            return current
+            return self._athlete_dict(current)
+        if safe_changes.get("covered_by") and safe_changes.get("active_state", current["active_state"]) == "active":
+            self._assert_coverage_free(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                coach=str(safe_changes["covered_by"]),
+            )
         new_version = int(current["version"]) + 1
         set_clause = ", ".join(f"{key} = ?" for key in safe_changes)
         conn.execute(
@@ -4474,7 +5067,10 @@ class CompCoachDB:
             new=new,
             version_after=new_version,
         )
-        return new
+        self._sync_takeover_availability(
+            conn, current=current, new=new, actor=actor
+        )
+        return self._athlete_dict(new)
 
     def assign_athletes(
         self,
@@ -4522,6 +5118,108 @@ class CompCoachDB:
             conn.commit()
         return count
 
+    def _assign_de_pod_group(
+        self, conn: sqlite3.Connection, *, event_id: str, pod: str,
+        coaches: Iterable[str], actor: str, source: str,
+        active_only: bool = False,
+    ) -> tuple[int, int]:
+        names = _coach_names(coaches)
+        main = names[0] if names else ""
+        side = names[1] if len(names) > 1 else ""
+        now = utc_now()
+        conn.execute("""
+            INSERT INTO pod_assignments (event_id, phase, pod, main_coach, side_coach, coaches_json, updated_at)
+            VALUES (?, 'de', ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id, phase, pod) DO UPDATE SET
+                main_coach = excluded.main_coach, side_coach = excluded.side_coach,
+                coaches_json = excluded.coaches_json, updated_at = excluded.updated_at
+        """, (event_id, pod, main, side, _dump(names), now))
+        self._sync_de_assignment_group(
+            conn, event_id=event_id, athlete_id=None, target_type="pod", pod=pod,
+            coaches=names, actor=actor, source=source,
+        )
+        sql = "SELECT * FROM athletes WHERE event_id = ? AND phase = 'de' AND pod = ?"
+        if active_only:
+            sql += " AND active_state = 'active' AND participation_status = 'active'"
+        rows = conn.execute(sql, (event_id, pod)).fetchall()
+        updated = exceptions_kept = 0
+        for row in rows:
+            athlete = dict(row)
+            if bool(athlete.get("assignment_override")):
+                exceptions_kept += 1
+                continue
+            if assigned_coaches(athlete) == names:
+                continue
+            self._update_athlete(
+                conn, event_id=event_id, athlete_id=str(athlete["id"]),
+                changes={"de_coaches_json": _dump(names)}, action="pod_assignment",
+                actor=actor, expected_version=int(athlete["version"]),
+                require_active=active_only,
+            )
+            updated += 1
+        return updated, exceptions_kept
+
+    def assign_de_pods(
+        self, event_id: str, *, pods: Iterable[str], coaches: Iterable[str],
+        actor: str, mode: str = "replace",
+    ) -> int:
+        """Assign an equal group to one to four chosen pods atomically.
+
+        A coach can already have assignments in other pods or events. ``add``
+        keeps each pod's current group; ``replace`` changes that group only.
+        Individual athlete exceptions remain intact.
+        """
+        if isinstance(pods, (str, bytes)):
+            raise TypeError("Pods must be a list.")
+        selected = list(dict.fromkeys(str(pod or "").strip().upper() for pod in pods))
+        if not selected or len(selected) > 4 or any(not pod for pod in selected):
+            raise ValueError("Select between one and four pods.")
+        if mode not in {"replace", "add"}:
+            raise ValueError("Assignment mode must be replace or add.")
+        names = _coach_names(coaches)
+        if not str(actor or "").strip():
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            count = 0
+            for pod in selected:
+                existing = conn.execute("SELECT * FROM pod_assignments WHERE event_id = ? AND phase = 'de' AND pod = ?", (event_id, pod)).fetchone()
+                group = _coach_names([*assigned_coaches(dict(existing)), *names]) if mode == "add" and existing else names
+                updated, _ = self._assign_de_pod_group(conn, event_id=event_id, pod=pod,
+                                                      coaches=group, actor=actor, source="assign_de_pods")
+                count += updated
+            if names:
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(conn, meet["id"], names, actor)
+            conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (utc_now(), event_id))
+            conn.commit()
+        return count
+
+    def assign_de_athletes(
+        self, event_id: str, athlete_ids: Iterable[str], *, coaches: Iterable[str], actor: str,
+    ) -> int:
+        """Set an individual DE exception with any number of equal coaches."""
+        names = _coach_names(coaches)
+        if not str(actor or "").strip():
+            raise ValueError("Actor is required.")
+        ids = list(dict.fromkeys(athlete_ids))
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            for athlete_id in ids:
+                row = conn.execute("SELECT phase FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+                if row is None or row["phase"] != "de":
+                    raise CompCoachError("Direct Elimination athlete not found.")
+                self._update_athlete(conn, event_id=event_id, athlete_id=athlete_id,
+                                     changes={"de_coaches_json": _dump(names), "assignment_override": 1},
+                                     action="assignment", actor=actor)
+            if ids and names:
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(conn, meet["id"], names, actor)
+            conn.commit()
+        return len(ids)
+
     def assign_pod(
         self,
         event_id: str,
@@ -4535,6 +5233,8 @@ class CompCoachDB:
         pod = pod.strip().upper()
         if phase not in {"pools", "de"} or not pod:
             raise ValueError("Phase and pod are required.")
+        if phase == "de":
+            return self.assign_de_pods(event_id, pods=[pod], coaches=[main_coach, side_coach], actor=actor)
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
@@ -4617,65 +5317,174 @@ class CompCoachDB:
         actor: str,
         covered_by: str | None = None,
         expected_version: int | None = None,
+        expected_coach_version: int | None = None,
     ) -> dict[str, Any]:
-        if status not in {"in_hole", "on_deck", "now"}:
+        """Report the actual call; imported pod/source strip remains untouched."""
+        if status not in {"waiting", "in_hole", "on_deck", "now"}:
             raise ValueError("Unknown live status.")
         now = utc_now()
         changes: dict[str, Any] = {
             "call_status": status,
-            "live_location": location.strip().upper(),
+            "de_awaiting_next": 0,
+            "live_location": "" if status == "waiting" else location.strip().upper(),
             "reported_at": now,
             "reported_by": actor,
         }
-        if covered_by is not None:
-            changes["covered_by"] = covered_by
-            changes["covered_at"] = now if covered_by else None
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
-            help_state = conn.execute(
-                "SELECT help_requested_at FROM athletes WHERE event_id = ? AND id = ?",
-                (event_id, athlete_id),
+            current_row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)
             ).fetchone()
-            if help_state and help_state["help_requested_at"] and location.strip():
+            if current_row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(current_row)
+            if current.get("help_requested_at") and location.strip() and status != "waiting":
                 changes["help_location"] = location.strip().upper()
-            result = self._update_athlete(
-                conn,
-                event_id=event_id,
-                athlete_id=athlete_id,
-                changes=changes,
-                action="live_update",
-                actor=actor,
-                expected_version=expected_version,
-                require_active=True,
-            )
-            if covered_by:
-                meet = self._meet_for_event(conn, event_id)
-                self._clear_available_coaches(
-                    conn, meet["id"], [covered_by], actor
+            if covered_by is not None:
+                result = self._set_live_coverage(
+                    conn, event_id=event_id, current=current, coach=covered_by,
+                    actor=actor, changes=changes, action="live_update",
+                    expected_version=expected_version,
+                    expected_coach_version=expected_coach_version,
                 )
+            else:
+                result = self._update_athlete(
+                    conn, event_id=event_id, athlete_id=athlete_id,
+                    changes=changes, action="live_update", actor=actor,
+                    expected_version=expected_version, require_active=True,
+                )
+            if status != "waiting" and result["phase"] == "de":
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(conn, meet["id"], assigned_coaches(result), actor)
             conn.commit()
         return result
 
-    def claim(self, event_id: str, athlete_id: str, coach: str) -> tuple[bool, str]:
+    def take_over_athlete(
+        self, event_id: str, athlete_id: str, coach: str, actor: str,
+        *, expected_version: int | None = None,
+        expected_coach_version: int | None = None,
+    ) -> dict[str, Any]:
+        """First available coach promises to cover this athlete's next call.
+
+        This changes neither the pod plan nor physical coverage. The promise
+        can be made before a call and survives subsequent call/location edits.
+        """
+        coach, actor = str(coach or "").strip(), str(actor or "").strip()
+        if not coach or not actor:
+            raise ValueError("Coach and actor are required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            # An old double tap from the same coach is harmless. Still refuse
+            # inactive/covered athletes and closed days rather than revive it.
+            if (current.get("takeover_coach") == coach
+                and current["active_state"] == "active"
+                and current.get("participation_status", "active") == "active"
+                and not current.get("covered_by")):
+                meet = self._meet_for_event(conn, event_id)
+                if coach not in _load(meet["active_coaches_json"], []):
+                    raise CompCoachError(f"{coach} is not an active coach for this competition.")
+                conn.commit()
+                return self._athlete_dict(current)
+            self._assert_takeover_free(
+                conn, event_id=event_id, athlete_id=athlete_id, coach=coach,
+                expected_coach_version=expected_coach_version,
+            )
+            result = self._update_athlete(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                changes={"takeover_coach": coach, "takeover_at": utc_now(), "takeover_by": actor},
+                action="takeover", actor=actor, expected_version=expected_version,
+                require_active=True,
+            )
+            conn.commit()
+        return result
+
+    def release_takeover(
+        self, event_id: str, athlete_id: str, coach: str, actor: str,
+        *, expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """The temporary responsible coach can release their pending promise."""
+        coach, actor = str(coach or "").strip(), str(actor or "").strip()
+        if not coach or not actor:
+            raise ValueError("Coach and actor are required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            if str(row["takeover_coach"] or "") != coach:
+                raise ConcurrentUpdateError("This takeover has changed. Only the current responsible coach can release it.")
+            result = self._update_athlete(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                changes={"takeover_coach": "", "takeover_at": None, "takeover_by": ""},
+                action="takeover_release", actor=actor, expected_version=expected_version,
+                require_active=True,
+            )
+            conn.commit()
+        return result
+
+    def cover_athlete(
+        self, event_id: str, athlete_id: str, coach: str, actor: str,
+        *, location: str | None = None, expected_version: int | None = None,
+        expected_coach_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Coach/coordinator records physical coverage, with an elapsed timer.
+
+        This can be used before a call. A coordinator may replace the current
+        covering coach, and the selected coach's previous coverage is released
+        atomically across events. Planned pod memberships never change here.
+        """
+        coach, actor = str(coach or "").strip(), str(actor or "").strip()
+        if not coach or not actor:
+            raise ValueError("Coach and actor are required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            changes: dict[str, Any] = {}
+            if location is not None:
+                changes.update(live_location=str(location).strip().upper(), reported_at=utc_now(), reported_by=actor)
+                if row["help_requested_at"] and str(location).strip():
+                    changes["help_location"] = str(location).strip().upper()
+            result = self._set_live_coverage(
+                conn, event_id=event_id, current=dict(row), coach=coach,
+                actor=actor, changes=changes, action="coverage_start",
+                expected_version=expected_version,
+                expected_coach_version=expected_coach_version,
+            )
+            conn.commit()
+        return result
+
+    def claim(
+        self, event_id: str, athlete_id: str, coach: str,
+        *, expected_version: int | None = None,
+        expected_coach_version: int | None = None,
+    ) -> tuple[bool, str]:
+        """First coach claims a called athlete; same-coach coverage is exclusive."""
         coach = coach.strip()
         if not coach:
             return False, "Choose your name first."
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
-            row = conn.execute(
-                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
-                (event_id, athlete_id),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
             if row is None:
                 conn.rollback()
                 return False, "Athlete not found."
             current = dict(row)
-            if (
-                current["active_state"] != "active"
-                or current.get("participation_status", "active") != "active"
-            ):
+            if current["active_state"] != "active" or current.get("participation_status", "active") != "active":
                 conn.rollback()
                 return False, f"{current['name']} is no longer active."
             if current["call_status"] == "waiting":
@@ -4684,43 +5493,14 @@ class CompCoachDB:
             if current["covered_by"]:
                 conn.rollback()
                 return False, f"Already covered by {current['covered_by']}."
-            now = utc_now()
-            cursor = conn.execute(
-                """
-                UPDATE athletes
-                SET covered_by = ?, covered_at = ?, version = version + 1, updated_at = ?
-                WHERE id = ? AND event_id = ? AND covered_by = ''
-                  AND active_state = 'active' AND participation_status = 'active'
-                """,
-                (coach, now, now, athlete_id, event_id),
+            result = self._set_live_coverage(
+                conn, event_id=event_id, current=current, coach=coach,
+                actor=coach, changes={}, action="claim",
+                expected_version=expected_version if expected_version is not None else int(current["version"]),
+                expected_coach_version=expected_coach_version,
             )
-            if cursor.rowcount != 1:
-                conn.rollback()
-                latest = conn.execute("SELECT covered_by FROM athletes WHERE id = ?", (athlete_id,)).fetchone()
-                who = latest["covered_by"] if latest else "another coach"
-                return False, f"Already covered by {who}."
-            new = dict(conn.execute("SELECT * FROM athletes WHERE id = ?", (athlete_id,)).fetchone())
-            self._sync_athlete_assignment_history(
-                conn,
-                current=current,
-                new=new,
-                actor=coach,
-                source="claim",
-            )
-            self._log_action(
-                conn,
-                event_id=event_id,
-                athlete_id=athlete_id,
-                action="claim",
-                actor=coach,
-                previous=current,
-                new=new,
-                version_after=new["version"],
-            )
-            meet = self._meet_for_event(conn, event_id)
-            self._clear_available_coaches(conn, meet["id"], [coach], coach)
             conn.commit()
-        return True, f"You are covering {new['name']}."
+        return True, f"You are covering {result['name']}."
 
     def release(
         self,
@@ -4733,15 +5513,12 @@ class CompCoachDB:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
-            result = self._update_athlete(
-                conn,
-                event_id=event_id,
-                athlete_id=athlete_id,
-                changes={"covered_by": "", "covered_at": None},
-                action="release",
-                actor=actor,
-                expected_version=expected_version,
-                require_active=True,
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            result = self._set_live_coverage(
+                conn, event_id=event_id, current=dict(row), coach="", actor=actor,
+                changes={}, action="release", expected_version=expected_version,
             )
             conn.commit()
         return result
@@ -4766,7 +5543,7 @@ class CompCoachDB:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
             current = conn.execute(
-                "SELECT phase FROM athletes WHERE event_id = ? AND id = ?",
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
                 (event_id, athlete_id),
             ).fetchone()
             if current is None:
@@ -4787,6 +5564,9 @@ class CompCoachDB:
                 actor=actor,
                 expected_version=expected_version,
             )
+            if current["takeover_coach"]:
+                meet = self._meet_for_event(conn, event_id)
+                self._mark_released_coaches_available(conn, meet["id"], [current["takeover_coach"]], actor)
             conn.commit()
         return result
 
@@ -4812,7 +5592,7 @@ class CompCoachDB:
             if current.get("help_requested_at"):
                 if current.get("help_requested_by") == actor:
                     conn.commit()
-                    return current
+                    return self._athlete_dict(current)
                 raise CompCoachError(
                     f"Help was already requested by {current.get('help_requested_by') or 'another coach'}."
                 )
@@ -4836,6 +5616,7 @@ class CompCoachDB:
                 event_id=event_id,
                 athlete_id=athlete_id,
                 changes={
+                    "de_awaiting_next": 0,
                     "help_requested_by": actor,
                     "help_requested_at": utc_now(),
                     "help_location": snapshot,
@@ -4848,7 +5629,7 @@ class CompCoachDB:
                 require_active=True,
             )
             meet = self._meet_for_event(conn, event_id)
-            self._clear_available_coaches(conn, meet["id"], [actor], actor)
+            self._clear_available_coaches(conn, meet["id"], [actor, *assigned_coaches(result)] if result["phase"] == "de" else [actor], actor)
             conn.commit()
         return result
 
@@ -4877,7 +5658,7 @@ class CompCoachDB:
             if current.get("help_acknowledged_by"):
                 if current["help_acknowledged_by"] == actor:
                     conn.commit()
-                    return current
+                    return self._athlete_dict(current)
                 raise ConcurrentUpdateError(
                     f"{current['help_acknowledged_by']} is already responding."
                 )
@@ -4922,7 +5703,7 @@ class CompCoachDB:
             current = dict(row)
             if not current.get("help_requested_at"):
                 conn.commit()
-                return current
+                return self._athlete_dict(current)
             result = self._update_athlete(
                 conn,
                 event_id=event_id,
@@ -4981,7 +5762,7 @@ class CompCoachDB:
                 )
             if current.get("participation_status", "active") == clean_status:
                 conn.commit()
-                return current
+                return self._athlete_dict(current)
             result = self._update_athlete(
                 conn,
                 event_id=event_id,
@@ -5068,7 +5849,7 @@ class CompCoachDB:
                 )
             if current.get("participation_status", "active") == "active":
                 conn.commit()
-                return current
+                return self._athlete_dict(current)
             source = conn.execute(
                 """
                 SELECT * FROM actions
@@ -5127,6 +5908,116 @@ class CompCoachDB:
                 actor=actor,
                 expected_version=current["version"],
             )
+            if result["active_state"] == "active":
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(conn, meet["id"], [*assigned_coaches(result), result.get("covered_by"), result.get("help_requested_by"), result.get("help_acknowledged_by")], actor)
+            conn.commit()
+        return result
+
+    def resume_de_athlete(
+        self, event_id: str, athlete_id: str, actor: str,
+        *, expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Return an advanced athlete to the current-bout queue, without a result."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            if row["phase"] != "de":
+                raise CompCoachError("Next-bout readiness is available only during direct elimination.")
+            result = self._update_athlete(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                changes={"de_awaiting_next": 0}, action="de_ready", actor=actor,
+                expected_version=expected_version, require_active=True,
+            )
+            meet = self._meet_for_event(conn, event_id)
+            self._clear_available_coaches(conn, meet["id"], assigned_coaches(result), actor)
+            conn.commit()
+        return result
+
+    def correct_de_result(
+        self, event_id: str, athlete_id: str, actor: str,
+        *, expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Undo the latest individual outcome while retaining later field updates.
+
+        Only competitive fields are restored. This permits correcting a rushed
+        tap even after a coach assignment or a fresh call for the next bout.
+        Paired AFM results must be corrected atomically through the pairing UI.
+        """
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            if expected_version is not None and int(current["version"]) != int(expected_version):
+                raise ConcurrentUpdateError("This athlete changed on another phone. Review the result again.")
+            if current["phase"] != "de":
+                raise CompCoachError("Result correction is available only during direct elimination.")
+            pending = conn.execute("""
+                SELECT 1 FROM de_bouts WHERE event_id = ? AND status = 'pending'
+                  AND (athlete_a_id = ? OR athlete_b_id = ?) LIMIT 1
+            """, (event_id, athlete_id, athlete_id)).fetchone()
+            if pending:
+                raise CompCoachError("Use AFM vs AFM to restore both athletes together.")
+            actions = conn.execute("""
+                SELECT * FROM actions WHERE event_id = ? AND athlete_id = ?
+                  AND undone_at IS NULL ORDER BY id DESC
+            """, (event_id, athlete_id)).fetchall()
+            source = None
+            readiness_after = False
+            for row in actions:
+                action = dict(row)
+                previous = _load(action["previous_json"], {}) or {}
+                new = _load(action["new_json"], {}) or {}
+                kind = action["action"]
+                if kind == "de_bout_result":
+                    raise CompCoachError("Use AFM vs AFM to restore both athletes together.")
+                if kind in {"won", "lost", "bye"}:
+                    source = action
+                    break
+                if kind in {"de_ready", "live_update", "help_request"}:
+                    readiness_after = True
+                if kind in {"de_result_correction", "undo", "de_bout_undo"}:
+                    continue
+                competitive_change = bool(previous) and (
+                    previous.get("phase") != new.get("phase")
+                    or any(previous.get(field) != new.get(field) for field in DE_RESULT_FIELDS)
+                )
+                if competitive_change:
+                    raise ConcurrentUpdateError("A newer competition update exists. The older result cannot be corrected here.")
+            if source is None:
+                raise CompCoachError("No individual DE result is available to correct.")
+            previous = _load(source["previous_json"], {}) or {}
+            saved = _load(source["new_json"], {}) or {}
+            def result_value(snapshot: Mapping[str, Any], field: str) -> Any:
+                return snapshot.get(field, 0 if field in {"de_wins", "de_byes"} else None)
+            if not previous or any(result_value(current, field) != result_value(saved, field) for field in DE_RESULT_FIELDS):
+                raise ConcurrentUpdateError("A newer competition result exists. The older result cannot be corrected here.")
+            changes = {field: result_value(previous, field) for field in DE_RESULT_FIELDS}
+            previous_awaiting = int(previous.get("de_awaiting_next", _legacy_de_awaiting(previous)))
+            changes["de_awaiting_next"] = int(current["de_awaiting_next"]) if readiness_after else previous_awaiting
+            # Restoring an old live snapshot could send a coach to an already
+            # finished bout. Keep the current call/coverage/help exactly as saved.
+            result = self._update_athlete(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                changes=changes, action="de_result_correction", actor=actor,
+                expected_version=int(current["version"]),
+            )
+            conn.execute("UPDATE actions SET undone_at = ?, undone_by = ? WHERE id = ?", (utc_now(), actor, source["id"]))
+            if result["active_state"] == "active" and result.get("participation_status", "active") == "active":
+                meet = self._meet_for_event(conn, event_id)
+                self._clear_available_coaches(conn, meet["id"], [*assigned_coaches(result), result.get("covered_by"), result.get("help_requested_by"), result.get("help_acknowledged_by")], actor)
             conn.commit()
         return result
 
@@ -5138,6 +6029,9 @@ class CompCoachDB:
         outcome: str,
         actor: str,
         expected_version: int | None = None,
+        expected_bout_id: object = NO_CHANGE,
+        expected_bout_version: int | None = None,
+        expected_opponent_version: int | None = None,
     ) -> dict[str, Any]:
         if outcome not in {"won", "lost"}:
             raise ValueError("Outcome must be won or lost.")
@@ -5160,9 +6054,29 @@ class CompCoachDB:
                 raise ConcurrentUpdateError(
                     "This athlete is already Out. The board has been refreshed."
                 )
-            now = utc_now()
+            try:
+                from compcoach_live.de_bouts import pending_bout_for_athlete, resolve_de_bout_in_transaction
+            except ModuleNotFoundError:  # direct Streamlit script
+                from de_bouts import pending_bout_for_athlete, resolve_de_bout_in_transaction
+            pending = pending_bout_for_athlete(conn, event_id, athlete_id)
+            if expected_bout_id is not NO_CHANGE and str(expected_bout_id or "") != (str(pending["id"]) if pending else ""):
+                raise ConcurrentUpdateError("This athlete's AFM pairing changed on another phone. Review the result again.")
+            if pending is not None:
+                other_id = pending["athlete_b_id"] if pending["athlete_a_id"] == athlete_id else pending["athlete_a_id"]
+                resolve_de_bout_in_transaction(
+                    self, conn, event_id, pending["id"],
+                    winner_id=athlete_id if outcome == "won" else other_id,
+                    actor=actor,
+                    expected_version=expected_bout_version,
+                    expected_athlete_versions={athlete_id: expected_version, other_id: expected_opponent_version},
+                )
+                result = self._athlete_dict(conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone())
+                conn.commit()
+                return result
+            now = de_result_now()
             changes = {
                 "active_state": "eliminated" if outcome == "lost" else "active",
+                "de_awaiting_next": int(outcome == "won"),
                 "call_status": "waiting",
                 "live_location": "",
                 "reported_at": None,
@@ -5189,8 +6103,89 @@ class CompCoachDB:
                 expected_version=expected_version,
                 require_active=True,
             )
+            meet = self._meet_for_event(conn, event_id)
+            self._mark_released_coaches_available(conn, meet["id"], [current.get("covered_by"), current.get("takeover_coach")], actor)
             conn.commit()
         return result
+
+    def mark_bye(
+        self,
+        event_id: str,
+        athlete_id: str,
+        *,
+        actor: str,
+        expected_version: int | None = None,
+        expected_bout_id: object = NO_CHANGE,
+    ) -> dict[str, Any]:
+        """Record one DE advancement without a fenced bout or invented win."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute("SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            if current["phase"] != "de":
+                raise CompCoachError("BYE is available only during direct elimination.")
+            if current["active_state"] != "active" or current.get("participation_status", "active") != "active":
+                raise ConcurrentUpdateError("This athlete is no longer active. The BYE was not saved.")
+            pending = conn.execute("""
+                SELECT id FROM de_bouts WHERE event_id = ? AND status = 'pending'
+                  AND (athlete_a_id = ? OR athlete_b_id = ?) LIMIT 1
+            """, (event_id, athlete_id, athlete_id)).fetchone()
+            if expected_bout_id is not NO_CHANGE and str(expected_bout_id or "") != (str(pending["id"]) if pending else ""):
+                raise ConcurrentUpdateError("This athlete's AFM pairing changed on another phone. Review the BYE again.")
+            if pending:
+                raise CompCoachError("Resolve or remove the pending AFM bout before recording a BYE.")
+            now = de_result_now()
+            result = self._update_athlete(
+                conn, event_id=event_id, athlete_id=athlete_id,
+                changes={
+                    "de_byes": int(current.get("de_byes") or 0) + 1,
+                    "de_awaiting_next": 1,
+                    "last_de_result": "bye", "last_de_result_at": now,
+                    "last_de_result_by": actor,
+                    "call_status": "waiting", "live_location": "",
+                    "reported_at": None, "reported_by": "",
+                    "covered_by": "", "covered_at": None,
+                    "help_requested_by": "", "help_requested_at": None,
+                    "help_location": "", "help_acknowledged_by": "",
+                    "help_acknowledged_at": None,
+                },
+                action="bye", actor=actor, expected_version=expected_version, require_active=True,
+            )
+            meet = self._meet_for_event(conn, event_id)
+            self._mark_released_coaches_available(conn, meet["id"], [current.get("covered_by"), current.get("takeover_coach")], actor)
+            conn.commit()
+        return result
+
+    def undo_last_bye(
+        self, event_id: str, athlete_id: str, actor: str,
+        *, expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Undo only the latest BYE while its complete saved state is current."""
+        with self._connection() as conn:
+            row = conn.execute("SELECT version, last_de_result FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id)).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            if expected_version is not None and int(row["version"]) != int(expected_version):
+                raise ConcurrentUpdateError("This athlete changed on another phone. Review the BYE again.")
+            if row["last_de_result"] != "bye":
+                raise ConcurrentUpdateError("The latest result is no longer a BYE. It cannot be undone here.")
+            action = conn.execute("""
+                SELECT id FROM actions WHERE event_id = ? AND athlete_id = ?
+                  AND action = 'bye' AND version_after = ? AND undone_at IS NULL
+                ORDER BY id DESC LIMIT 1
+            """, (event_id, athlete_id, row["version"])).fetchone()
+            if action is None:
+                raise ConcurrentUpdateError("A newer update exists. Undo BYE was blocked to preserve it.")
+            action_id = int(action["id"])
+        # The existing write transaction rechecks the athlete revision, so a
+        # change between this read and Undo can never be overwritten.
+        return self.undo_action(event_id, action_id, actor)
 
     def mark_out(
         self,
@@ -5211,6 +6206,7 @@ class CompCoachDB:
                 athlete_id=athlete_id,
                 changes={
                     "active_state": "eliminated",
+                    "de_awaiting_next": 0,
                     "call_status": "waiting",
                     "live_location": "",
                     "reported_at": None,
@@ -5287,6 +6283,12 @@ class CompCoachDB:
             if row is None:
                 raise CompCoachError("Athlete not found.")
             current = dict(row)
+            paired_loss = conn.execute("""
+                SELECT 1 FROM de_bouts WHERE event_id = ? AND status = 'resolved'
+                  AND winner_id <> ? AND (athlete_a_id = ? OR athlete_b_id = ?) LIMIT 1
+            """, (event_id, athlete_id, athlete_id, athlete_id)).fetchone()
+            if current["active_state"] == "eliminated" and paired_loss:
+                raise CompCoachError("Use AFM vs AFM to restore both athletes together.")
             source_action = conn.execute(
                 """
                 SELECT previous_json FROM actions
@@ -5311,6 +6313,8 @@ class CompCoachDB:
                 "help_location": "",
                 "help_acknowledged_by": "",
                 "help_acknowledged_at": None,
+                "de_byes": 0,
+                "de_awaiting_next": 0,
             }
             restore_fields = {
                 "active_state",
@@ -5321,6 +6325,8 @@ class CompCoachDB:
                 "covered_by",
                 "covered_at",
                 "de_wins",
+                "de_byes",
+                "de_awaiting_next",
                 "last_de_result",
                 "last_de_result_at",
                 "last_de_result_by",
@@ -5335,6 +6341,8 @@ class CompCoachDB:
                 for field in restore_fields
             }
             changes["active_state"] = "active"
+            if "de_awaiting_next" not in previous:
+                changes["de_awaiting_next"] = _legacy_de_awaiting({**current, **previous, "active_state": "active"})
             result = self._update_athlete(
                 conn,
                 event_id=event_id,
@@ -5345,8 +6353,7 @@ class CompCoachDB:
                 expected_version=expected_version,
             )
             restored_coaches = [
-                result.get("main_coach"),
-                result.get("side_coach"),
+                *assigned_coaches(result),
                 result.get("covered_by"),
                 result.get("help_requested_by"),
                 result.get("help_acknowledged_by"),
@@ -5392,6 +6399,8 @@ class CompCoachDB:
             if action_row is None:
                 raise CompCoachError("This action is no longer available for Undo.")
             action = dict(action_row)
+            if action["action"] in {"de_bout_result", "de_bout_undo"}:
+                raise CompCoachError("Use AFM vs AFM to restore both athletes together.")
             previous = _load(action["previous_json"], None)
             if not previous or not action["athlete_id"]:
                 raise CompCoachError("This import action cannot be undone here.")
@@ -5402,6 +6411,13 @@ class CompCoachDB:
             if current_row is None:
                 raise CompCoachError("Athlete not found.")
             current = dict(current_row)
+            if action["action"] in {"won", "lost", "bye", "out", "restore", "de_import_not_advanced"}:
+                pending = conn.execute("""
+                    SELECT 1 FROM de_bouts WHERE event_id = ? AND status = 'pending'
+                      AND (athlete_a_id = ? OR athlete_b_id = ?) LIMIT 1
+                """, (event_id, current["id"], current["id"])).fetchone()
+                if pending:
+                    raise CompCoachError("Resolve or remove the pending AFM bout before undoing an individual result.")
             if int(current["version"]) != int(action["version_after"]):
                 raise ConcurrentUpdateError(
                     "A newer update exists. Undo was blocked to avoid overwriting it."
@@ -5411,6 +6427,32 @@ class CompCoachDB:
                 field: previous[field] if field in previous else current.get(field)
                 for field in ATHLETE_MUTABLE_FIELDS
             }
+            if "de_byes" not in previous:
+                restored["de_byes"] = 0
+            if "de_awaiting_next" not in previous:
+                restored["de_awaiting_next"] = _legacy_de_awaiting(previous)
+            if "de_coaches_json" not in previous and restored.get("phase") == "de":
+                restored["de_coaches_json"] = _dump(_coach_names([restored.get("main_coach"), restored.get("side_coach")]))
+            takeover_fields = ("takeover_coach", "takeover_at", "takeover_by")
+            # Result/attendance/coverage corrections must never resurrect an
+            # old promise after the bout has ended. Only explicitly undoing
+            # a takeover or its release changes temporary responsibility.
+            if action["action"] not in {"takeover", "takeover_release"}:
+                restored.update({field: current.get(field) for field in takeover_fields})
+            if (restored.get("covered_by") or restored.get("active_state") != "active"
+                or restored.get("participation_status", "active") != "active"
+                or restored.get("phase") != current.get("phase")):
+                restored.update(takeover_coach="", takeover_at=None, takeover_by="")
+            if restored.get("takeover_coach") and restored["takeover_coach"] != current.get("takeover_coach"):
+                self._assert_takeover_free(
+                    conn, event_id=event_id, athlete_id=current["id"],
+                    coach=str(restored["takeover_coach"]),
+                )
+            if restored.get("covered_by") and restored.get("active_state") == "active":
+                self._assert_coverage_free(
+                    conn, event_id=event_id, athlete_id=current["id"],
+                    coach=str(restored["covered_by"]),
+                )
             new_version = int(current["version"]) + 1
             set_clause = ", ".join(f"{key} = ?" for key in restored)
             now = utc_now()
@@ -5440,5 +6482,8 @@ class CompCoachDB:
                 new=new,
                 version_after=new_version,
             )
+            self._sync_takeover_availability(
+                conn, current=current, new=new, actor=actor
+            )
             conn.commit()
-        return new
+        return self._athlete_dict(new)

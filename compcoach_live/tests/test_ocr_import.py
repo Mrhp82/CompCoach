@@ -2,6 +2,7 @@ import io
 import struct
 import zlib
 
+import pytest
 from PIL import Image
 
 from compcoach_live import ocr_import
@@ -345,3 +346,55 @@ def test_pinned_rapidocr_native_stack_initializes_headlessly():
     tokens = backend.scan(Image.new("RGB", (32, 32), "white"))
 
     assert tokens == []
+
+
+@pytest.mark.parametrize(
+    "debris",
+    [
+        "fe melive.com", "www.fencingtimelive.com", "Fencing Time Live",
+        "fencing time live . com", "Copyright 2026", "Privacy Policy",
+        "Showing 1 to 10 of 20 entries", "Search:", "Next",
+        "fe melive . com", "fe melive.c0m", "fe melive.corn", "Fencing T1me L1ve",
+    ],
+)
+def test_ocr_does_not_create_athletes_from_footer_or_browser_residue(debris):
+    tokens = table_tokens(pool=False)
+    tokens += [
+        token(debris, 0.99, 10, 260, 210, 280),
+        token("VE", 0.99, 310, 260, 340, 280),
+    ]
+
+    result = parse_screenshot(screenshot_bytes(), backend=StaticBackend(tokens))
+
+    assert result.ok
+    assert [row["name"] for row in result.rows] == ["AGLIPAY Alyssa", "HSU Audrey"]
+    assert result.diagnostics["rows_detected"] == 2
+    assert result.diagnostics["ignored_rows"][0]["text"] == debris
+    assert any("website/navigation" in note for note in result.diagnostics["warnings"])
+
+
+def test_ocr_joins_split_footer_tokens_before_rejecting_them():
+    tokens = table_tokens(pool=False)
+    tokens += [
+        token("fe", 0.99, 10, 260, 35, 280),
+        token("melive.com", 0.99, 40, 260, 155, 280),
+        token("VE", 0.99, 310, 260, 340, 280),
+    ]
+
+    result = parse_screenshot(screenshot_bytes(), backend=StaticBackend(tokens))
+
+    assert result.ok
+    assert len(result.rows) == 2
+    assert result.diagnostics["ignored_rows"] == [{"text": "fe melive.com", "reason": "web_address"}]
+
+
+@pytest.mark.parametrize("name", ["LEE J. P.", "O'NEIL Zoë", "王小明", "ALICE", "NEXT Alex", "LIVE Jennifer"])
+def test_ocr_keeps_real_names_and_rows_missing_last_columns(name):
+    tokens = table_tokens(pool=False)
+    tokens[4] = token(name, 0.99, 10, 140, 170, 160)
+    # Table helper uses no Club/Division/Country cells for either athlete.
+    result = parse_screenshot(screenshot_bytes(), backend=StaticBackend(tokens))
+
+    assert result.ok
+    assert [row["name"] for row in result.rows] == [name, "HSU Audrey"]
+    assert result.diagnostics["ignored_rows"] == []

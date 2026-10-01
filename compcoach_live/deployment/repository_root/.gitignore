@@ -1,0 +1,9 @@
+# Runtime data and credentials must remain outside GitHub.
+**/.streamlit/secrets.toml
+*.db
+*.db-shm
+*.db-wal
+**/data/assets/
+**/backups/
+__pycache__/
+.pytest_cache/

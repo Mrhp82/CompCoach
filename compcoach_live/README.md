@@ -8,10 +8,130 @@ CompCoach answers two operational questions:
 1. Is the athlete still in the competition?
 2. Does the athlete need a coach right now?
 
-It intentionally stores no bout scores, opponents, tableau, seed, or ranking.
-Only the pool W/L summary and DE outcome needed for live coordination are kept.
+It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
+DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.6.0
+## Included in v0.9.5
+
+### New in v0.9.5
+
+- **Live** now combines the athlete operations and former Situation overview. A single athlete list retains the existing coverage filters, pool cards and DE wheel; **My Group** remains the personal dashboard.
+- Live has compact, collapsed sections for **Coaches**, **DE sector load**, **All assignments** and **Pool results**. Availability management and cross-event deployment remain available to Admin/Coordinator.
+- The quick call/strip form and shared overview refresh together with Live every five seconds. Global phase lights, available coaches, busy-coach takeovers and help alerts remain visible across pages.
+- Open sessions previously on Situation move to Live; a previously selected assignment or pool-results view opens its matching section.
+
+### New in v0.9.4
+
+- Now, On deck and In the hole can be saved before the actual bout strip is known, both on athlete cards and in the coordinator's quick update. The call keeps its reporter and timestamp; the imported pod reference stays separate.
+- The actual-strip field is emphasized and marked optional for call updates. Unknown-strip calls have a clear save confirmation and a persistent **Actual strip to confirm** notice; enter the strip later and tap the call again to update it.
+
+### New in v0.9.3
+
+- Accepting a takeover immediately removes the coach from the available list across all events. The personal dashboard shows the accepted takeover and prevents a conflicting availability declaration.
+- Releasing the takeover or recording the result restores availability only when the coach has no other pending takeover or physical coverage. Pending responsibility still has no physical-coverage timer until the coach records being with the athlete.
+- Existing takeovers also hide legacy available flags, and revision checks reject availability/deployment actions sent from an obsolete screen.
+
+### New in v0.9.2
+
+- Uncovered-athlete alerts put the athlete's name first, with larger bold call, actual strip, pod and event details. The assigned coach's busy status is a smaller note underneath; the one-tap takeover button remains beside the alert.
+
+### New in v0.9.1
+
+- Busy-coach warnings include **I’ll take over** for an available coach identity, including an Admin who is also a coach. No call or actual strip is required.
+- This records temporary responsibility without changing pod assignments or inventing physical coverage. Everyone sees **Taken by [coach]**, and the athlete appears in that coach's My Group.
+- **Release takeover** is available to the owner and Admin/Coordinator. Starting physical coverage or finishing the bout clears the promise. Actual busy status and its timer still start only when the coach records being with the athlete.
+- Athlete and coach revision checks protect simultaneous taps and changes made on another phone; a coach physically busy elsewhere cannot take over from an obsolete screen.
+
+### New in v0.9.0
+
+- Direct Elimination is a continuous wheel: the most recent Won/Bye moves to the end; earlier winners rise as more outcomes are entered. All active athletes remain editable with round dividers and no readiness button.
+- Imported DE strip (for example B1) is the pod calling reference, not the actual bout strip. Each card accepts an actual strip and one-tap Now / On deck / In the hole / Not called. Previous live strips are cleared after results.
+- Coaches can mark themselves with an athlete even before a call; Admin/Coordinator can mark any active coach. Live coverage is exclusive across every event in the day and shows its own elapsed timer.
+- A shared busy board shows other athletes assigned to an occupied coach, highlighting fresh calls and potential coverage gaps across events. Other planned coaches remain visible.
+- Won/Lost releases the actual covering coach and makes that coach available; assignments remain in place. Individual and joint AFM corrections remain in Correct DE results.
+- Footers and known website debris remain excluded on import and reversibly quarantined when previously saved.
+
+### New in v0.8.0
+
+- DE pods have coach groups without Main/Side ranks or a two-coach limit.
+  Assign several coaches to one pod, or add one coach to one to four selected
+  pods while retaining existing groups. Individual athlete exceptions remain
+  possible. Pools retain their Main/Side roles.
+- Every DE coach appears in My Group, event highlighting, workload, availability,
+  team plans, pod summaries, and the shared WhatsApp message. Existing DE
+  assignments migrate automatically; all coach intervals remain in the history.
+- Staff can manually mark a same-event AFM-versus-AFM DE bout, optionally name
+  its round, and record the winner. The winner stays active and the loser goes
+  Out in one transaction. Correcting the result restores both athletes together;
+  stale changes on another phone prevent an unsafe correction.
+- BYEs are recorded separately from fenced wins, with one-tap entry and dedicated corrections
+  for the latest BYE. Athlete cards, pod load, team plans and WhatsApp show
+  rounds passed as BYEs plus wins: one BYE and two wins means three rounds.
+  A pending AFM pairing must be removed or resolved before recording a BYE.
+- OCR and pasted tables reject website names, URL fragments, navigation, and
+  footer text before treating them as athletes. The OCR preview reports ignored
+  debris. Existing imported records are retained and can be marked withdrawn.
+
+For a mobile check: assign three coaches to one DE pod, add one of them to two
+more pods, then open each coach link. Pair two AFM athletes, record a winner,
+check the result from a second phone, and undo it. Also check a Pool assignment
+still displays its Main and Side correctly.
+
+
+### New in v0.7.3
+
+- All active staff pages highlight explicitly available coaches in a compact
+  green panel with elapsed time. The panel refreshes every five seconds and
+  covers the whole competition day, across event assignments. Existing help
+  alerts, personal availability controls, and coordinator deployment tools
+  remain available.
+- Coach pool cards can mark an athlete absent after confirmation. The athlete
+  leaves operational lists while assignments and results are retained. A
+  collapsed absent-athlete list in My Group and Live supports reversal through
+  the same guarded attendance API used by Admin.
+
+### New in v0.7.2
+
+- The Add Coach form explicitly separates present for this day, competition
+  only, and general directory only. The default makes the coach immediately
+  available in the day roster and assignment lists. Adding an existing name
+  reuses its identity and retains existing competition roles.
+
+### New in v0.7.1
+
+- Adding a coach selects the new entry on the next render, avoiding a
+  Streamlit state error after the coach was already saved. The coach is
+  created once and can immediately be marked present for the day.
+
+### New in v0.7.0
+
+- A neutral Admin home separates active competition days, scheduled days, and
+  archives. Finishing a day without preparing another stops live activity;
+  closing the whole competition archives its days and retains the season
+  history. New competitions no longer require deleting earlier data.
+- A real PostgreSQL backend supports Supabase while retaining the same
+  operational storage API and transaction guards. Set
+  `COMPCOACH_DATABASE_URL` to opt in. SQLite remains available for local tests;
+  the cloud connection never migrates the SQLite data automatically. The cached
+  backend uses a bounded connection pool to reuse secure database connections
+  across mobile refreshes without creating unbounded connections.
+- Competition logos and strip maps can use a private Supabase Storage bucket.
+  Cloud data and assets survive a Streamlit host restart. Set
+  `COMPCOACH_REQUIRE_CLOUD=true` in production so an incomplete cloud
+  configuration fails clearly instead of falling back to a local file.
+- `migrate_to_supabase.py` makes an explicit, one-shot SQLite-to-PostgreSQL copy
+  into an empty destination. It preserves IDs, shared-link tokens, days,
+  results, and assignment history; validates local images before migration;
+  refuses to overwrite existing destination data or objects; and imports
+  database rows in a single transaction. Its default is a local dry run.
+- The project can stay inside `compcoach_live` when hosted. Repository-root
+  deployment templates and a simple `launch.sh` are included. Read
+  [DEPLOYMENT.md](DEPLOYMENT.md) for the Italian step-by-step guide.
+
+The backend and deployment files are supplied in this release. They are not a
+claim that your Supabase project has already been connected or that an online
+deployment has been created. Field use requires the configured project and
+the multi-phone checks in the deployment guide.
 
 ### New in v0.6.0
 
@@ -52,8 +172,8 @@ Only the pool W/L summary and DE outcome needed for live coordination are kept.
   the home event is only a visual priority and never blocks emergency work in
   another event. Coach renames retain their stable identity and update current
   operational assignments without rewriting historical audit bylines.
-- SQLite remains the active database. The persistence boundary is ready for a
-  future Supabase/PostgreSQL adapter, but this release is **not connected to
+- In v0.6.0 SQLite remained the active database. The persistence boundary was ready for a
+  future Supabase/PostgreSQL adapter, but that release was **not connected to
   Supabase** and setting Supabase credentials alone will not migrate or sync
   any data.
 
@@ -80,11 +200,11 @@ Only the pool W/L summary and DE outcome needed for live coordination are kept.
   can infer non-advancers.
 - Admin, Coordinator, and Coach links use random tokens and require no staff
   login. A shared link covers the whole competition day and all its events.
-- Main/Side coach assignment by athlete, plus DE assignment by pod.
+- Main/Side Pool assignments; equal DE coach groups by athlete or pod.
 - Live calls: `In the Hole`, `On Deck`, and `Now`, with automatic timestamp.
 - A personal `My Group` dashboard for both Coach and Admin links, containing
-  every athlete assigned as Main or Side coach plus athletes the person is
-  currently covering. The coach's event is highlighted and temporary
+  every athlete assigned as Main, Side, or equal DE coach plus athletes the
+  person is currently covering. The coach's event is highlighted and temporary
   cross-event coverage remains visible.
 - A mobile-first `Situation` page with three compact views: `Now`,
   `Assignments`, and `Pool Results`. `Assignments` retains the read-only Team
@@ -96,9 +216,9 @@ Only the pool W/L summary and DE outcome needed for live coordination are kept.
   its data still indicates unfinished work; availability is never inferred
   automatically and does not mean that the coach is online.
 - The `Now` situation view shows every active Direct Elimination athlete by
-  event and sector/pod, including Main and Side assignments, current coverage,
+  event and sector/pod, including all equal DE coaches, current coverage,
   live-call state, assignment exceptions, unassigned athletes, and unknown
-  sectors. `Won` athletes remain in the sector load; `Lost` athletes move to
+  sectors. `Won` athletes rotate to the end of the live queue; `Lost` athletes move to
   Out and are excluded from that active load.
 - Admin and Coordinator can atomically `Send an available coach to a DE
   sector` as Side support. The operation rechecks the coach's availability,
@@ -170,7 +290,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip CompCoach_Live_v0.6.0.zip
+unzip -o CompCoach_Live_v0.8.0.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1
@@ -192,9 +312,13 @@ python -m pip install -r compcoach_live/requirements.txt
 python -m streamlit run compcoach_live/app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
+Alternatively, use `bash compcoach_live/launch.sh` from the repository root,
+or `bash launch.sh` from the application folder. The launcher retains the
+working directory so Streamlit finds the intended `.streamlit` configuration.
+
 After updating an existing installation—or after rebuilding the Codespace—make
 sure the system OCR library is present, then reinstall the Python requirements
-before restarting Streamlit. Version 0.6.0 uses the current RapidOCR package
+before restarting Streamlit. This release uses the current RapidOCR package
 and works with the Python 3.14 runtime used by newer Codespaces:
 
 ```bash
@@ -229,8 +353,15 @@ Environment variables or Streamlit secrets:
 | `COMPCOACH_ADMIN_PIN` | Protects event creation and the local Admin event list |
 | `COMPCOACH_PUBLIC_URL` | Optional base-URL override used to generate complete share links |
 | `COMPCOACH_DB_PATH` | SQLite path; point this at persistent storage in production |
+| `COMPCOACH_DATABASE_URL` | Opts into the PostgreSQL/Supabase backend; use the Session pooler connection string |
+| `COMPCOACH_REQUIRE_CLOUD` | Refuses missing database/asset cloud configuration when `true` |
+| `SUPABASE_URL` | Project URL for private cloud asset storage |
+| `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY` | Server-only private key for the asset bucket |
+| `COMPCOACH_STORAGE_BUCKET` | Private asset bucket name; default `compcoach-assets` |
 
-See `.streamlit/secrets.example.toml`.
+See `.streamlit/secrets.example.toml` for local tests and
+`deployment/repository_root/.streamlit/secrets.example.toml` for cloud setup.
+Actual Secrets must never be committed. Environment variables take precedence.
 
 ## Storage and deployment
 
@@ -262,17 +393,20 @@ PWA/Web Push implementation and per-device permission. Until that is built and
 field-tested, WhatsApp and the open live board remain the operational alert
 channels.
 
-The database file **must** live on persistent storage before a real
-competition. Platforms with ephemeral disks can lose the file after a restart
-or redeploy. A public deployment must also set both `COMPCOACH_ADMIN_PIN` and
-`COMPCOACH_PUBLIC_URL`.
+When running on SQLite, the database file **must** live on persistent storage
+before a real competition. Ephemeral hosts can lose local files after a restart
+or redeploy; SQLite is suitable only for one application instance.
 
-SQLite is appropriate only for one application instance. Do not run multiple
-replicas against separate local files. For a multi-instance or ephemeral
-deployment, a real Supabase/PostgreSQL adapter and migration must be implemented
-and tested before field use. The persistence layer is isolated in `storage.py`
-to make that replacement possible without redesigning the parser or live UI;
-there is no active Supabase connection in v0.6.0.
+For cloud hosting, configure the PostgreSQL backend and private Supabase bucket
+using [DEPLOYMENT.md](DEPLOYMENT.md). Data and images remain in Supabase while
+Streamlit runs on a separate hosting service. A public deployment must also set
+`COMPCOACH_ADMIN_PIN` and `COMPCOACH_PUBLIC_URL`. Backend failures produce an
+operational error; they do not silently redirect writes to SQLite.
+
+The database URL selects a backend; it does not synchronize databases. Use the
+explicit migration once if existing local data is needed, then direct every
+coach to the same cloud deployment. Old tokens can be preserved, but the old
+Codespaces URL is not redirected to the new domain automatically.
 
 ## Import behavior
 
@@ -317,3 +451,10 @@ pytest -q tests
 ```
 
 Parser and storage tests use temporary data only.
+PostgreSQL migration and backend tests use an isolated disposable schema when
+`COMPCOACH_TEST_POSTGRES_URL` is set. The local SQL checks cover row parity,
+preserved IDs and operational workflows. PostgreSQL SQL compatibility has also
+been exercised through PGlite's WASM engine and its psycopg wire server; that
+emulator does not replace a native multi-session PostgreSQL test. The actual
+hosted Supabase connection, concurrent phone sessions and Storage bucket still
+need the acceptance checks in [DEPLOYMENT.md](DEPLOYMENT.md).

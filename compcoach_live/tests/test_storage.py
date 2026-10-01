@@ -1891,7 +1891,7 @@ def test_coach_availability_cas_staff_removal_and_locked_meet():
         temp.cleanup()
 
 
-def test_deploy_available_coach_preserves_main_and_keeps_exceptions():
+def test_deploy_available_coach_appends_equal_coach_and_keeps_exceptions():
     temp = TemporaryDirectory()
     try:
         db = CompCoachDB(Path(temp.name) / "test.db")
@@ -1937,14 +1937,6 @@ def test_deploy_available_coach_preserves_main_and_keeps_exceptions():
                 actor="Casey",
                 expected_availability_version=available["version"],
             )
-        with pytest.raises(CompCoachError, match="already has Side coach Jordan"):
-            db.deploy_available_coach_to_pod(
-                event["id"],
-                pod="M",
-                coach="Taylor",
-                actor="Casey",
-                expected_availability_version=available["version"],
-            )
         assert {
             row["coach_name"]: row
             for row in db.list_coach_availability(meet["id"])
@@ -1960,12 +1952,14 @@ def test_deploy_available_coach_preserves_main_and_keeps_exceptions():
         )
         assert deployed["main_coach"] == "Alex"
         assert deployed["previous_side"] == "Jordan"
-        assert deployed["side_coach"] == "Taylor"
+        assert deployed["side_coach"] == "Jordan"
+        assert deployed["coaches"] == ["Alex", "Jordan", "Taylor"]
         assert deployed["updated"] == 1
         assert deployed["exceptions_kept"] == 1
         pod = db.list_pod_assignments(event["id"], "de")[0]
         assert pod["main_coach"] == "Alex"
-        assert pod["side_coach"] == "Taylor"
+        assert pod["side_coach"] == "Jordan"
+        assert pod["coaches"] == ["Alex", "Jordan", "Taylor"]
         assert {
             row["coach_name"]: row
             for row in db.list_coach_availability(meet["id"])

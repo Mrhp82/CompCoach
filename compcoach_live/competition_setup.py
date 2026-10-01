@@ -18,6 +18,7 @@ try:
     from compcoach_live.asset_store import (
         AssetStoreError,
         LocalAssetStore,
+        SupabaseAssetStore,
         StoredAsset,
         validate_image,
     )
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from asset_store import (
         AssetStoreError,
         LocalAssetStore,
+        SupabaseAssetStore,
         StoredAsset,
         validate_image,
     )
@@ -52,6 +54,7 @@ def render_competition_profile(
     actor: str,
     *,
     asset_root: str | Path | None = None,
+    asset_store: LocalAssetStore | SupabaseAssetStore | None = None,
 ) -> None:
     """Render the admin editor for parent competition details and images.
 
@@ -67,7 +70,7 @@ def render_competition_profile(
 
     try:
         competition = _require_competition(db, competition_id)
-        store = LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
+        store = asset_store or LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
     except (CompCoachError, AssetStoreError, ValueError) as exc:
         st.error(str(exc))
         return
@@ -162,6 +165,7 @@ def render_competition_branding(
     meet: dict[str, Any],
     *,
     asset_root: str | Path | None = None,
+    asset_store: LocalAssetStore | SupabaseAssetStore | None = None,
 ) -> None:
     """Render compact competition branding plus an optional strip-map viewer."""
 
@@ -171,7 +175,7 @@ def render_competition_branding(
 
     try:
         competition = _require_competition(db, competition_id)
-        store = LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
+        store = asset_store or LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
         logo = _load_asset(store, competition, "logo")
         strip_map = _load_asset(store, competition, "strip_map")
     except (CompCoachError, AssetStoreError, ValueError) as exc:
@@ -217,7 +221,7 @@ def render_competition_branding(
 
 def _render_asset_editor(
     db: Any,
-    store: LocalAssetStore,
+    store: LocalAssetStore | SupabaseAssetStore,
     competition_id: str,
     competition: dict[str, Any],
     *,
@@ -309,7 +313,7 @@ def _save_profile_metadata(
 
 def _save_uploaded_asset(
     db: Any,
-    store: LocalAssetStore,
+    store: LocalAssetStore | SupabaseAssetStore,
     competition_id: str,
     *,
     kind: AssetKind,
@@ -358,7 +362,7 @@ def _save_uploaded_asset(
 
 
 def _load_asset(
-    store: LocalAssetStore,
+    store: LocalAssetStore | SupabaseAssetStore,
     competition: dict[str, Any],
     kind: AssetKind,
 ) -> StoredAsset | None:
@@ -367,6 +371,12 @@ def _load_asset(
     competition_id = str(competition.get("id") or "").strip()
     if not competition_id:
         return None
+    if isinstance(store, SupabaseAssetStore):
+        reference = str(competition.get(f"{kind}_path") or "").strip()
+        if not reference:
+            return None
+        return store.load_reference(reference, competition_id=competition_id,
+                                    kind=kind, map_id="main")
     deterministic = (
         store.get_logo(competition_id)
         if kind == "logo"

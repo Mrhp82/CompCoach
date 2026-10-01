@@ -62,6 +62,24 @@ _STRIP_VALUE_RE = re.compile(
     r"^(?:(?:strip|piste|pod|sector)\s*[:#-]?\s*)?(?:[A-Za-z]{1,4}\s*-?\s*\d*|#?\s*\d+(?:\.0+)?)$",
     re.IGNORECASE,
 )
+# A screen capture can include the site's footer or browser chrome below the
+# table.  Such text may even line up with a plausible strip code (e.g. VE).
+# Match positive evidence of page debris rather than demanding a particular
+# surname style, two words, ASCII letters, or complete trailing columns.
+_WEB_ADDRESS_RE = re.compile(
+    r"(?:https?\s*://|www\s*\.|"
+    r"[\w-]{2,}\s*\.\s*(?:com|c0m|corn|net|org|io|dev|app|edu|gov|co|uk)(?=\b|/))",
+    re.IGNORECASE,
+)
+_PAGE_NOISE_RE = re.compile(
+    r"^(?:search(?:\s*:)?|previous|next|first|last|"
+    r"show\s+(?:\d+\s+)?entries|"
+    r"showing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries(?:\s+.*)?|"
+    r"privacy\s+policy|terms\s+of\s+(?:use|service)|"
+    r"all\s+rights\s+reserved|copyright\b.*|"
+    r"powered\s+by\b.*|direct\s+elimination|pool\s+assignments|strip\s+assignments)$",
+    re.IGNORECASE,
+)
 
 
 _HEADER_ALIASES: dict[str, set[str]] = {
@@ -123,6 +141,26 @@ def normalize_display_name(value: object) -> str:
     """
 
     return _clean_text(value)
+
+
+def import_name_noise_reason(value: object) -> str:
+    """Return a reason only for recognisable non-athlete page text.
+
+    This deliberately leaves unfamiliar names alone.  Initials (``J. P.``),
+    apostrophes, accents, hyphens and single-token names remain valid, and the
+    check does not depend on strip/pool cells being present.
+    """
+
+    cleaned = normalize_display_name(value)
+    if _WEB_ADDRESS_RE.search(cleaned) or re.search(r"\S+@\S+", cleaned):
+        return "web_address"
+    compact = re.sub(r"[^a-z0-9]", "", cleaned.casefold())
+    if re.search(r"fencingt[i1l]mel[i1l]ve", compact):
+        return "site_branding"
+    plain = cleaned.strip(" \t:|·•©®™.-")
+    if _PAGE_NOISE_RE.fullmatch(plain):
+        return "page_navigation"
+    return ""
 
 
 def canonical_athlete_key(name: object) -> str:
@@ -311,7 +349,11 @@ def _looks_like_strip(value: object) -> bool:
 
 def _looks_like_name(value: object) -> bool:
     cleaned = _clean_text(value)
-    if not cleaned or cleaned.casefold() == "no matching records found":
+    if (
+        not cleaned
+        or cleaned.casefold() == "no matching records found"
+        or import_name_noise_reason(cleaned)
+    ):
         return False
     return bool(re.search(r"[^\W\d_]", cleaned, flags=re.UNICODE))
 
@@ -424,6 +466,7 @@ def parse_pasted_table(text: object, phase_hint: str | None = None) -> ParseResu
             "separator": 0,
             "empty_marker": 0,
             "missing_name": 0,
+            "page_noise": 0,
             "malformed": 0,
             "repeated_header": 0,
             "duplicate_identity": 0,
@@ -515,6 +558,9 @@ def parse_pasted_table(text: object, phase_hint: str | None = None) -> ParseResu
             diagnostics["ignored_rows"]["empty_marker"] += 1
             diagnostics["empty_marker_found"] = True
             continue
+        if import_name_noise_reason(possible_name):
+            diagnostics["ignored_rows"]["page_noise"] += 1
+            continue
 
         if len(cleaned_cells) == 1 and expected_width > 1:
             diagnostics["ignored_rows"]["malformed"] += 1
@@ -581,6 +627,7 @@ __all__ = [
     "ParseResult",
     "canonical_athlete_key",
     "derive_pod",
+    "import_name_noise_reason",
     "normalize_display_name",
     "parse_import",
     "parse_pasted_data",

@@ -107,10 +107,13 @@ def test_coach_rename_preserves_identity_and_updates_only_current_references(
     availability = db.set_coach_availability(
         meet["id"],
         "Alex",
-        True,
+        False,
         "Alex",
         expected_version=availability["version"],
     )
+    availability = {row["coach_name"]: row for row in db.list_coach_availability(meet["id"])}["Alex"]
+    # A physically occupied coach must remain unavailable through a rename.
+    assert availability["is_busy"] and not availability["is_available"]
     actions_before = db.recent_actions(event["id"], limit=200)
     versions_before = {
         row["athlete_key"]: row["version"]
@@ -192,6 +195,9 @@ def test_coach_rename_preserves_identity_and_updates_only_current_references(
     after_availability = {
         row["coach_name"]: row for row in db.list_coach_availability(meet["id"])
     }["Alexander"]
+    assert after_availability["is_busy"] and not after_availability["is_available"]
+    assert after_availability["busy_athlete_id"] == availability["busy_athlete_id"]
+    assert after_availability["busy_since"] == availability["busy_since"]
     for field in (
         "is_available",
         "available_since",

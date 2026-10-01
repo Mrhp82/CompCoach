@@ -29,6 +29,11 @@ from typing import Any, Literal, Protocol
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+try:
+    from compcoach_live.parsers import import_name_noise_reason
+except ModuleNotFoundError:  # Streamlit runs app.py directly from this folder.
+    from parsers import import_name_noise_reason
+
 Phase = Literal["pools", "de", "unknown"]
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -342,6 +347,7 @@ def _base_diagnostics(byte_count: int) -> dict[str, Any]:
         "headers": {},
         "phase_source": "",
         "rows_detected": 0,
+        "ignored_rows": [],
         "empty_marker_found": False,
         "column_rereads": [],
         "alternatives": [],
@@ -671,6 +677,10 @@ def _parse_with_backend(
             continue
         if _letter_count(text) < 2 or _header_field(text):
             continue
+        noise_reason = import_name_noise_reason(text)
+        if noise_reason:
+            diagnostics["ignored_rows"].append({"text": text, "reason": noise_reason})
+            continue
         row_anchors.append(
             {
                 "text": text,
@@ -782,6 +792,10 @@ def _parse_with_backend(
 
     diagnostics["rows_detected"] = len(rows)
     diagnostics["cell_confidences"] = confidence_rows
+    if diagnostics["ignored_rows"]:
+        diagnostics["warnings"].append(
+            f"Ignored {len(diagnostics['ignored_rows'])} website/navigation row(s) outside the athlete list."
+        )
     if diagnostics["review_cells"]:
         diagnostics["warnings"].append(
             f"Review {len(diagnostics['review_cells'])} highlighted OCR cell(s) before importing."
@@ -993,7 +1007,7 @@ def _valid_field(field: str, value: str) -> bool:
     if not cleaned:
         return field in {"strip", "time", "pool", "pod"}
     if field == "name":
-        return _letter_count(cleaned) >= 2
+        return _letter_count(cleaned) >= 2 and not import_name_noise_reason(cleaned)
     if field == "time":
         return bool(_TIME_RE.fullmatch(cleaned))
     if field == "pool":

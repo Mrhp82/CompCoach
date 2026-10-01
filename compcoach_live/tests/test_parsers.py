@@ -1,3 +1,5 @@
+import pytest
+
 from compcoach_live.parsers import (
     canonical_athlete_key,
     derive_pod,
@@ -262,3 +264,65 @@ def test_derive_pod_examples():
     assert derive_pod("12") == ""
     assert derive_pod(7) == ""
     assert derive_pod("") == ""
+
+
+@pytest.mark.parametrize("headers", [True, False])
+def test_import_rejects_ocr_website_residue_without_rejecting_short_final_rows(headers):
+    pasted = "Name\tStrip #\tClub\tDivision\tCountry\n" if headers else ""
+    pasted += (
+        "CHAN Nathan\tJ2\tAFM\tCentral California\tUSA\n"
+        "fe melive.com\tVE\n"
+        "PARK Sangwook\tM1\n"
+    )
+
+    result = parse_pasted_table(pasted)
+
+    assert result.ok
+    assert result.phase == "de"
+    assert [(row["name"], row["strip"]) for row in result.records] == [
+        ("CHAN Nathan", "J2"),
+        ("PARK Sangwook", "M1"),
+    ]
+    assert result.diagnostics["ignored_rows"]["page_noise"] == 1
+
+
+@pytest.mark.parametrize(
+    "debris",
+    [
+        "www.fencingtimelive.com",
+        "https://www.fencingtimelive.com/rounds/strips/event/round",
+        "fencing time live . com",
+        "fe melive . com · VE",
+        "fe melive.c0m",
+        "fe melive.corn",
+        "Fencing T1me L1ve",
+        "Fencing Time Live",
+        "Copyright 2026",
+        "Privacy Policy",
+        "Terms of Use",
+        "Showing 1 to 10 of 20 entries",
+        "Show 10 entries",
+        "Search:",
+        "Previous",
+        "Next",
+        "Direct Elimination",
+    ],
+)
+def test_browser_navigation_and_footer_text_are_not_athletes(debris):
+    result = parse_pasted_table(f"Name\tStrip #\nDING Max\tB1\n{debris}\tVE")
+
+    assert [row["name"] for row in result.records] == ["DING Max"]
+    assert result.diagnostics["ignored_rows"]["page_noise"] == 1
+
+
+def test_name_noise_filter_preserves_initials_unicode_hyphens_and_navigation_surnames():
+    names = [
+        "LEE J. P.", "O'NEIL Zoë", "José García-López", "王小明", "ALICE",
+        "LIVE Jennifer", "PAGE Nicholas", "NEXT Alex", "SHOW William", "STRIP Jonathan",
+        "Max VE", "NG Jo", "O Jo", "JO COM",
+    ]
+    result = parse_pasted_table("Name\tStrip #\n" + "\n".join(f"{name}\tB1" for name in names))
+
+    assert result.ok
+    assert [row["name"] for row in result.records] == names
+    assert result.diagnostics["ignored_rows"]["page_noise"] == 0
