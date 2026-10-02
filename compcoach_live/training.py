@@ -30,21 +30,21 @@ DEFAULT_COACHES = ["Coach Alex", "Coach Taylor", "Coach Morgan"]
 TRAINING_STEPS = [
     {"title": "Your identity and My Group", "instruction": "Open My Group. Check your event, athletes and planned pool strips.", "hint": "You have your own complete exercise. Other coaches can join later without changing your progress."},
     {"title": "Pool assignments and start signal", "instruction": "Open Team situation and check All assignments. The virtual coordinator has assigned your group and started Pools: the signal is green.", "hint": "My Group is your own work list; Team situation shows the shared situation, coach availability and assignments."},
-    {"title": "Respond to shared help", "instruction": "A virtual colleague reports a pool emergency: an athlete has missed several bouts without coaching. Tap I’m coming on the shared request.", "hint": "During pools, everyone is busy. Request help only for a real emergency, such as several missed bouts or an athlete left without coaching who feels abandoned. Check location and elapsed time; acknowledging help is not physical coverage."},
-    {"title": "Complete pool results", "instruction": "Record wins and losses for one athlete, for example 3 / 3. You can also practice marking an athlete absent.", "hint": "Completed athletes collapse below your current work. The other fictional pools finish after your result."},
+    {"title": "Respond to shared help", "instruction": "On the shared emergency card for {primary_name} at {primary_strip}, tap I’m coming.", "hint": "This virtual athlete has missed several bouts without coaching. During pools, everyone is busy: request help only for a real emergency. I’m coming tells the team you are responding; it does not mean you have arrived."},
+    {"title": "Complete pool results", "instruction": "In My Group, open Add pool result for {primary_name}. Tap 3 under Wins and 3 under Losses, then Save pool result.", "hint": "Any valid result completes this exercise. You can instead practice marking this athlete Absent. Completed athletes move below your current work; the other fictional pools then finish."},
     {"title": "Tell the team you are available", "instruction": "Your pools are finished. Tap I’m available to help and check the shared available-coach banner.", "hint": "Free coaches can be reassigned across events. The virtual coordinator will prepare your next assignment."},
-    {"title": "Direct Elimination pod plan", "instruction": "Open Team situation to inspect the new DE pod assignments and green DE signal. Then return to My Group.", "hint": "DE coaches are equal. A pod reference such as A1 identifies the calling pod, not the actual bout strip."},
-    {"title": "Call without a confirmed strip", "instruction": "A parent reports {primary_name} On deck. Save the call from My Group or Team situation. If the actual strip is unknown, leave it empty; a confirmed strip is also allowed.", "hint": "On deck, In the hole and Now save with their timestamp. An unknown strip is shown as Actual strip to confirm. Do not invent a strip from the pod."},
-    {"title": "Actual strip and physical coverage", "instruction": "{primary_name} is now called on C3. Add the actual strip and tap I’m with {primary_name}.", "hint": "Coverage starts your busy timer and removes you from Available. Your other called athletes may need another coach."},
+    {"title": "Direct Elimination pod plan", "instruction": "Open Team situation and check All assignments plus the green DE signal. Your DE pod plan is ready.", "hint": "DE coaches are equal. A reference such as A1 identifies the calling pod, not the actual bout strip. A call saved while inspecting this screen is retained for the next exercise."},
+    {"title": "Call without a confirmed strip", "instruction": "On {primary_name}’s card, tap On deck. If Actual bout strip is unknown, leave it empty; enter a confirmed strip when known.", "hint": "The same call can be saved from My Group or Team situation. In the hole or Now also count if that is the information you have. Unknown strips show Actual strip to confirm. Do not invent a strip from the pod."},
+    {"title": "Confirm the strip and record arrival", "instruction": "In My Group, enter C3 in Actual bout strip for {primary_name}, then tap I’m with {primary_name}.", "hint": "I’m with the athlete records your arrival, starts your busy timer and removes you from Available. Your other called athletes may need another coach."},
     {"title": "Busy coach: a colleague may help", "instruction": "You are with {primary_name}. Watch the alternate-coverage notice for {secondary_name}; a virtual colleague may respond after a short delay. When your bout finishes, record Won or Lost for {primary_name}.", "hint": "Some replays include a colleague who covers the other athlete; some leave the alert unresolved. Request help when needed. Your result releases you."},
-    {"title": "A sudden call: take over", "instruction": "You are free. A new Now, On deck or In the hole call will appear for {secondary_name}, whose assigned coach is busy. Tap I’ll take over.", "hint": "A takeover immediately reserves you, even before physical coverage. Your name disappears from Available."},
-    {"title": "Cover the athlete and request help", "instruction": "Add actual strip J2 for {secondary_name}, start physical coverage, and tap 🚨 Need help now. A virtual colleague will respond.", "hint": "Requests are global and include an elapsed timer. The coordinator can update calls, strips and covering coaches."},
+    {"title": "A sudden call: take over", "instruction": "Watch the shared alternate-coverage card for {secondary_name}. When the call appears on J2, tap I’ll take over.", "hint": "The guide names the actual call when it arrives. I’ll take over reserves you for this athlete before you arrive; your name disappears from Available."},
+    {"title": "Cover one athlete; get help for another", "instruction": "In My Group, enter J2 in Actual bout strip for {secondary_name}, then tap I’m with {secondary_name}.", "hint": "First arrive for the athlete you promised to cover. A different athlete will then be called while you are busy. The guide will name that uncovered athlete and ask you to tap 🚨 Need help now on their card."},
     {"title": "One-tap DE result", "instruction": "Record Won or Lost for {secondary_name}. Check the wheel, Out list and your availability.", "hint": "A winner moves to the end of the wheel. A loss moves Out. Calls and coverage clear; no bout scores are required."},
-    {"title": "An urgent request to available coaches", "instruction": "The virtual coordinator needs coverage for {reassigned_name}, On deck on E2. Tap I'll cover this bout on the request, open My Group, record your physical arrival, then tap Won or Lost.", "hint": "The request is offered to available coaches. The first acceptance takes this bout and closes the offer for everyone else. It does not change pod assignments or start a physical-coverage timer. Tap I’m with the athlete when you arrive."},
-    {"title": "Record a bye", "instruction": "Record a Bye for {bye_name} and check the number of rounds passed.", "hint": "A bye advances the athlete without inventing a win. Mistakes can be corrected in Correct DE results."},
-    {"title": "Mark a same-club bout", "instruction": "In Team situation → AFM vs AFM, mark {pair_a_name} and {pair_b_name} as opponents in this practice round.", "hint": "Without a bracket, the app cannot infer the pairing. Any coach who notices it can mark it."},
-    {"title": "Resolve both athletes together", "instruction": "Record the winner of the paired AFM bout. Check that the opponent becomes Out and the winner moves to the end of the wheel.", "hint": "The result updates both athletes together. Dedicated correction controls restore mistakes safely."},
-    {"title": "Next actual strip and final bout", "instruction": "{final_name} is fencing now on D4. Cover this new call, then record one final Won or Lost result.", "hint": "The next strip can differ from the previous strip and the calling pod. The exercise closes the fictional day after your result."},
+    {"title": "An urgent request to available coaches", "instruction": "On the shared request for {reassigned_name}, On deck on E2, tap I'll cover this bout.", "hint": "The first available coach to accept takes this bout. The pod plan stays unchanged. The guide next asks you to tap I’m with the named athlete when you arrive, then Won or Lost when the bout ends."},
+    {"title": "Record a bye", "instruction": "In My Group, open More actions · {bye_name}, then tap Bye.", "hint": "The Bye button is inside More actions for the named athlete. Check rounds passed beside the name afterward. A bye advances the athlete without inventing a win; Correct DE results can restore mistakes."},
+    {"title": "Mark a same-club bout", "instruction": "In Team situation → AFM vs AFM, open Mark an AFM bout. Select {pair_a_name} as First athlete and {pair_b_name} as Second athlete, tap Review pairing, then Confirm pairing.", "hint": "Without an imported bracket, a coach must mark the two opponents. The two results will then be handled together."},
+    {"title": "Resolve both athletes together", "instruction": "In Team situation → AFM vs AFM, tap {pair_a_name} wins on the card against {pair_b_name}.", "hint": "Either named winner is valid. The opponent becomes Out and the winner moves to the end of the list. Both results update together."},
+    {"title": "Next actual strip and final bout", "instruction": "In My Group, {final_name} is Now on D4. Tap I’m with {final_name} when you arrive.", "hint": "The next strip can differ from the previous strip and the calling pod. The guide then asks for Won or Lost; that result closes the fictional day."},
     {"title": "Exercise complete", "instruction": "Review your completed skills and the final board. You may start Practice again while the exercise link remains active.", "hint": "Your real competition data was never changed. Each replay can create a different coverage response or sudden call."},
 ]
 
@@ -53,22 +53,27 @@ TRAINING_STEPS = [
 _GUIDE_ACTIONS = (
     "Open My Group. Check your athletes and pool strips.",
     "Open Team situation → All assignments. Check strips and the green Pools signal.",
-    "A pool emergency needs help. Tap I’m coming on the shared request.",
-    "Record one athlete’s pool wins and losses in My Group, for example 3 / 3.",
+    "For {primary_name} at {primary_strip}, tap I’m coming on the shared emergency card.",
+    "For {primary_name}, open Add pool result: Wins 3, Losses 3, then Save pool result.",
     "Tap I’m available to help.",
-    "Open Team situation to check your DE pod plan. Then return to My Group.",
-    "Save {primary_name}’s call. Leave the actual strip empty if unknown; a known strip is allowed.",
-    "Set {primary_name}’s actual strip to C3, then tap I’m with {primary_name}.",
+    "Open Team situation. Check All assignments and the green DE signal.",
+    "For {primary_name}, tap On deck. Actual bout strip may stay empty if unknown.",
+    "For {primary_name}, enter C3 in Actual bout strip, then tap I’m with {primary_name}.",
     "You are with {primary_name}. When the bout finishes, tap Won or Lost.",
-    "When {secondary_name}’s sudden call appears, tap I’ll take over.",
-    "Set {secondary_name} to J2, start physical coverage, then tap Need help now.",
+    "Watch {secondary_name}’s shared alternate-coverage card on J2; tap I’ll take over when called.",
+    "For {secondary_name}, enter J2 in Actual bout strip, then tap I’m with {secondary_name}.",
     "Tap Won or Lost for {secondary_name}. Check your availability.",
-    "Tap I'll cover this bout for {reassigned_name}, cover them on E2, then tap Won or Lost.",
-    "Record a Bye for {bye_name}.",
-    "Open Team situation → AFM vs AFM. Mark {pair_a_name} and {pair_b_name} as opponents.",
-    "Record the winner of the paired AFM bout.",
-    "Cover {final_name}’s new call on D4, then tap Won or Lost.",
+    "For {reassigned_name}, On deck on E2, tap I'll cover this bout on the shared request.",
+    "In My Group, open More actions · {bye_name}, then tap Bye.",
+    "In AFM vs AFM, select {pair_a_name} and {pair_b_name}, then tap Review pairing.",
+    "On their AFM card, tap {pair_a_name} wins (or {pair_b_name} wins).",
+    "{final_name} is Now on D4. Tap I’m with {final_name} when you arrive.",
     "Review your completed skills. You may choose Practice again.",
+)
+_GUIDE_VIEWS = (
+    "My Group", "Live", "", "My Group", "My Group", "Live", "My Group",
+    "My Group", "My Group", "", "My Group", "My Group", "", "My Group",
+    "Live", "Live", "My Group", "",
 )
 
 _FIRST_NAMES = ["Leo", "Mila", "Eli", "Nora", "Theo", "Lena", "Finn", "Zoe", "Owen", "Iris", "Jude", "Ruby"]
@@ -77,7 +82,7 @@ _MILESTONES = {
     "pool_result": "Pool result", "participation_absent": "Attendance",
     "absent": "Attendance", "help_request": "Help requested",
     "help_acknowledged": "Help acknowledged", "live_update": "Call reported",
-    "coverage_start": "Physical coverage", "claim": "Physical coverage",
+    "coverage_start": "Arrival recorded", "claim": "Arrival recorded",
     "takeover": "Takeover", "won": "DE result", "lost": "DE result",
     "coverage_request_accepted": "Urgent coverage accepted",
     "bye": "Bye", "de_bout_create": "AFM pairing",
@@ -163,7 +168,7 @@ def _metadata(row: dict) -> dict:
     stage = max(0, min(int(row["stage"]), len(TRAINING_STEPS) - 1))
     step = TRAINING_STEPS[stage]
     substitutions = {key: str(state.get(key) or "the practice athlete") for key in (
-        "primary_name", "secondary_name", "bye_name", "pair_a_name", "pair_b_name", "reassigned_name", "final_name",
+        "primary_name", "primary_strip", "secondary_name", "help_target_name", "bye_name", "pair_a_name", "pair_b_name", "reassigned_name", "final_name",
     )}
     instruction = str(state.get("instruction_override") or step["instruction"]).format(**substitutions)
     participants = [{"name": name, **person} for name, person in state.get("participants", {}).items()]
@@ -176,6 +181,11 @@ def _metadata(row: dict) -> dict:
         "stage_title": step["title"], "title": step["title"],
         "instruction": instruction, "hint": step["hint"],
         "guide_instruction": str(state.get("guide_instruction_override") or _GUIDE_ACTIONS[stage]).format(**substitutions),
+        "guide_view": str(state.get("guide_view", _GUIDE_VIEWS[stage])),
+        "guide_target_id": str(state.get("guide_target_id") or ""),
+        "guide_target_name": str(state.get("guide_target_name") or ""),
+        "guide_target_event_id": str(state.get("guide_target_event_id") or ""),
+        "guide_pair_versions": list(state.get("guide_pair_versions") or []),
         "scenario_message": str(state.get("scenario_message") or ""),
         "last_feedback": str(state.get("last_feedback") or ""),
         "participants": participants,
@@ -284,7 +294,7 @@ def _seed(db: Any, conn: Any, meet_id: str, coaches: list[str]) -> dict:
     return {
         "coaches": coaches, "participants": {}, "entered_action_id": _max_action(conn, meet_id),
         "scenario_message": "A fictional two-event practice day is ready. Use the ordinary app buttons; no real competition is affected.",
-        "primary_id": targets[0]["id"], "primary_name": targets[0]["name"],
+        "primary_id": targets[0]["id"], "primary_name": targets[0]["name"], "primary_strip": targets[0]["source_strip"],
         "secondary_id": targets[1]["id"], "secondary_name": targets[1]["name"],
         "history": [], "generation": uuid4().hex,
     }
@@ -437,7 +447,7 @@ def _choose_targets(athletes: list[dict], state: dict) -> None:
     primary = next((athlete for athlete in eligible if any(coach in assigned_coaches(athlete) for coach in participants)), eligible[0])
     secondary = next((athlete for athlete in eligible if athlete["id"] != primary["id"] and athlete["event_id"] != primary["event_id"]), None)
     secondary = secondary or next((athlete for athlete in eligible if athlete["id"] != primary["id"]), primary)
-    state.update(primary_id=primary["id"], primary_name=primary["name"], secondary_id=secondary["id"], secondary_name=secondary["name"])
+    state.update(primary_id=primary["id"], primary_name=primary["name"], primary_strip=primary["source_strip"], secondary_id=secondary["id"], secondary_name=secondary["name"])
 
 
 def _help(db: Any, conn: Any, athlete: dict) -> None:
@@ -507,6 +517,7 @@ def _virtual_cover(db: Any, conn: Any, athlete: dict, coach: str, strip: str) ->
     db._set_live_coverage(conn,event_id=athlete["event_id"],current=athlete,coach=coach,actor=SYSTEM_ACTOR,
                          changes={"live_location":athlete["live_location"] or strip,
                                   "call_status":athlete["call_status"] if athlete["call_status"] != "waiting" else "now",
+                                  "de_awaiting_next":0,
                                   "reported_at":athlete["reported_at"] or utc_now(),
                                   "reported_by":athlete["reported_by"] or SYSTEM_ACTOR},
                          action="coverage_start",expected_version=athlete["version"])
@@ -624,13 +635,143 @@ def _process_pending(db: Any, conn: Any, row: dict, state: dict) -> None:
                 state["scenario_message"] = f"Sudden call: {athlete['name']} · {status.replace('_',' ')} · actual strip J2. Assigned coach is busy. You are available: take over the athlete."
         elif kind == "ack_help":
             if athlete and _eligible(athlete) and athlete["help_requested_at"] and not athlete["help_acknowledged_by"]:
-                _update(db,conn,athlete,{"help_acknowledged_by":state["coaches"][2],"help_acknowledged_at":utc_now()},"help_acknowledged")
-                state["scenario_message"] = f"{state['coaches'][2]} acknowledged your help request and is coming. Keep the call and coverage accurate."
+                athlete = _update(db,conn,athlete,{"help_acknowledged_by":state["coaches"][2],"help_acknowledged_at":utc_now()},"help_acknowledged")
+                if event.get("cover_after_help") and not athlete["covered_by"] and not athlete["takeover_coach"]:
+                    _virtual_cover(db,conn,athlete,state["coaches"][2],athlete["live_location"] or "K4")
+                    state["scenario_message"] = f"{state['coaches'][2]} responded and is now with {athlete['name']} on {athlete['live_location'] or 'K4'}. You remain with {state['secondary_name']} on J2."
+                else:
+                    state["scenario_message"] = f"{state['coaches'][2]} acknowledged your help request and is coming. Keep the call and coverage accurate."
     state["pending_events"] = retained
 
 
 def _assign_to_learner(db: Any, conn: Any, athlete: dict, state: dict) -> dict:
     return _update(db,conn,athlete,{"de_coaches_json":_dump([state["learner"]]),"assignment_override":1},"assignment")
+
+
+def _ensure_stage10_help_target(db: Any, conn: Any, row: dict, state: dict) -> None:
+    """Introduce an uncovered third athlete after the learner actually arrives.
+
+    Old courses which already submitted the former own-athlete alert can finish
+    that lesson. All other existing courses gain the new scenario lazily, with
+    their athletes, results, personal link and progress preserved.
+    """
+    athletes = _athletes(conn,row["meet_id"])
+    secondary = _target(athletes,state,"secondary_id")
+    if not secondary:
+        return
+    if "help_flow_version" not in state:
+        legacy_help = secondary.get("covered_by") == state["learner"] and any(
+            action["actor"] == state["learner"] and action["action"] == "help_request"
+            and action["athlete_id"] == secondary["id"]
+            for action in _actions(conn,row["meet_id"],int(state.get("entered_action_id",0)))
+        )
+        state["help_flow_version"] = 1 if legacy_help else 2
+        if legacy_help:
+            state.update(help_target_id=secondary["id"],help_target_name=secondary["name"],help_target_strip=secondary["live_location"] or "J2")
+            return
+    if secondary.get("covered_by") != state["learner"] or state.get("help_target_id"):
+        return
+    choices = [athlete for athlete in athletes if athlete["phase"] == "de" and _eligible(athlete)
+               and athlete["id"] not in {secondary["id"],state.get("primary_id")}
+               and not athlete.get("covered_by") and not athlete.get("takeover_coach")]
+    if not choices:
+        return
+    athlete = _assign_to_learner(db,conn,choices[0],state)
+    athlete = _update(db,conn,athlete,{
+        "call_status":"now","live_location":"K4","de_awaiting_next":0,
+        "reported_at":utc_now(),"reported_by":SYSTEM_ACTOR,
+    },"live_update")
+    state.update(help_target_id=athlete["id"],help_target_name=athlete["name"],help_target_strip="K4")
+    # Both virtual colleagues remain busy until a delayed response to this
+    # actual alert. The learner cannot cover two athletes at once.
+    others = [item for item in _athletes(conn,row["meet_id"]) if _eligible(item)
+              and item["id"] not in {secondary["id"],athlete["id"]}
+              and not item.get("covered_by") and not item.get("takeover_coach")]
+    for coach in state["coaches"][1:]:
+        already_busy = any(_eligible(item) and item.get("covered_by") == coach
+                           for item in _athletes(conn,row["meet_id"]))
+        if not already_busy and others:
+            _virtual_cover(db,conn,others.pop(0),coach,"F2")
+    state["scenario_message"] = (
+        f"You are with {secondary['name']} on J2. {athlete['name']} is now called on K4 "
+        "without a coach. Both virtual colleagues are busy; send a shared help request for this other athlete."
+    )
+
+
+def _sync_guidance(conn: Any, row: dict, state: dict, *, stage: int | None = None) -> None:
+    """Name the next actual control, rather than repeat already saved actions."""
+    stage = int(row["stage"] if stage is None else stage)
+    state.pop("instruction_override",None)
+    state.pop("guide_instruction_override",None)
+    state["guide_view"] = _GUIDE_VIEWS[stage]
+    targets = {2:"primary_id",3:"primary_id",6:"primary_id",7:"primary_id",8:"primary_id",
+               9:"secondary_id",10:"secondary_id",11:"secondary_id",12:"reassigned_id",
+               13:"bye_id",14:"pair_a_id",15:"pair_a_id",16:"final_id"}
+    athletes = _athletes(conn,row["meet_id"])
+    target = _target(athletes,state,targets.get(stage,""))
+    state["guide_target_id"] = target["id"] if target else ""
+    state["guide_target_name"] = target["name"] if target else ""
+    state["guide_target_event_id"] = target["event_id"] if target else ""
+    state.pop("guide_pair_versions",None)
+    if stage == 14 and target:
+        opponent = _target(athletes,state,"pair_b_id")
+        if opponent:
+            state["guide_pair_versions"] = [int(target["version"]),int(opponent["version"])]
+    if not target:
+        return
+    name = target["name"]
+    instruction = None
+    compact = None
+    if stage == 7 and target["live_location"] == "C3":
+        instruction = f"In My Group, tap I’m with {name} when you arrive on C3."
+    elif stage == 7 and target["live_location"]:
+        instruction = f"For {name}, switch on Modify call. Enter C3 in Actual bout strip, then tap I’m with {name} when you arrive."
+    elif stage == 8:
+        result_saved = any(action["actor"] == state["learner"] and action["athlete_id"] == target["id"]
+                           and action["action"] in {"won","lost"}
+                           for action in _actions(conn,row["meet_id"],int(state.get("entered_action_id",0))))
+        if result_saved:
+            state["guide_view"] = "Live"
+            instruction = f"Your result for {name} is saved. Watch {state['secondary_name']} in Team situation; the virtual team responds shortly."
+            watched = _target(athletes,state,"secondary_id")
+            if watched:
+                state["guide_target_id"],state["guide_target_name"] = watched["id"],watched["name"]
+                state["guide_target_event_id"] = watched["event_id"]
+            compact = f"Your result is saved. In Team situation, watch {state['secondary_name']}; the virtual team responds shortly."
+        else:
+            instruction = f"You are with {name} on {target['live_location'] or 'C3'}. When this bout ends, tap Won or Lost on the current-athlete card."
+    elif stage == 9:
+        if target["call_status"] == "waiting":
+            state["guide_view"] = "Live"
+            instruction = f"In Team situation, wait for {name}’s simulated call on J2. It arrives in a few seconds."
+        else:
+            label = {"now":"Now","on_deck":"On deck","in_hole":"In the hole"}[target["call_status"]]
+            instruction = f"{name} is {label} on J2. On the shared alternate-coverage card, tap I’ll take over."
+    elif stage == 10:
+        if target["covered_by"] != state["learner"]:
+            instruction = f"In My Group, tap I’m with {name} when you arrive on J2."
+        else:
+            uncovered = _target(athletes,state,"help_target_id")
+            if uncovered and uncovered["id"] != target["id"]:
+                state["guide_target_id"],state["guide_target_name"] = uncovered["id"],uncovered["name"]
+                state["guide_target_event_id"] = uncovered["event_id"]
+                instruction = (f"In My Group, {uncovered['name']} is Now on K4 without a coach. "
+                               "Tap 🚨 Need help now on their card.")
+                compact = f"In My Group, {uncovered['name']} is Now on K4. Tap 🚨 Need help now."
+    elif stage == 11:
+        instruction = f"You are with {name} on {target['live_location'] or 'J2'}. When this bout ends, tap Won or Lost on the current-athlete card."
+    elif stage == 12:
+        if target["covered_by"] == state["learner"]:
+            state["guide_view"] = "My Group"
+            instruction = f"You are with {name} on {target['live_location'] or 'E2'}. When this bout ends, tap Won or Lost on the current-athlete card."
+        elif target["takeover_coach"] == state["learner"]:
+            state["guide_view"] = "My Group"
+            instruction = f"In My Group, tap I’m with {name} when you arrive on E2."
+    elif stage == 16 and target["covered_by"] == state["learner"]:
+        instruction = f"You are with {name} on {target['live_location'] or 'D4'}. Tap Won or Lost when this final practice bout ends."
+    if instruction:
+        state["instruction_override"] = instruction
+        state["guide_instruction_override"] = compact or instruction
 
 
 def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None:
@@ -662,12 +803,13 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
         _clear_help(db,conn,athletes)
         _convert_to_de(db,conn,meet_id,state)
         _phase(conn,meet_id,"de")
+        state["de_started_action_id"] = _max_action(conn,meet_id)
         state["scenario_message"] = "The virtual coordinator imported the DE list, assigned equal-coach pod groups and started DE. Actual bout strips are still unknown."
     elif stage == 6:
         _choose_targets(athletes,state)
         state["scenario_message"] = f"Fictional parent message: {state['primary_name']} is on deck. Actual strip is not known yet."
     elif stage == 7:
-        state["scenario_message"] = f"New fictional parent message: {state['primary_name']} is fencing now on C3. Add the actual strip and start physical coverage."
+        state["scenario_message"] = f"New fictional parent message: {state['primary_name']} is called on C3. Enter C3 in Actual bout strip, then tap I’m with {state['primary_name']} when you arrive."
     elif stage == 8:
         primary = _target(athletes,state,"primary_id")
         secondary = _target(athletes,state,"secondary_id")
@@ -699,12 +841,16 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
             _queue(state,"sudden_call",8,athlete_id=secondary["id"])
             state["scenario_message"] = "Your bout result freed you. A new call will arrive shortly; watch the shared alternate-coverage cards."
     elif stage == 10:
-        state["scenario_message"] = f"Your takeover of {state['secondary_name']} is reserved. The confirmed actual strip is J2. Start physical coverage there, then request help."
+        state["help_flow_version"] = 2
+        state.pop("help_target_id",None)
+        state.pop("help_target_name",None)
+        state["scenario_message"] = f"Your takeover of {state['secondary_name']} is reserved. On arrival at J2, tap I’m with {state['secondary_name']}."
+        _ensure_stage10_help_target(db,conn,row,state)
     elif stage == 11:
-        secondary = _target(athletes,state,"secondary_id")
-        if secondary and secondary["help_requested_at"] and not secondary["help_acknowledged_by"]:
-            _queue(state,"ack_help",5,athlete_id=secondary["id"])
-        state["scenario_message"] = "Your alert is shared with the virtual team. Record the result when this bout finishes."
+        help_target = _target(athletes,state,"help_target_id") or _target(athletes,state,"secondary_id")
+        if help_target and help_target["help_requested_at"] and not help_target["help_acknowledged_by"]:
+            _queue(state,"ack_help",5,athlete_id=help_target["id"],cover_after_help=int(state.get("help_flow_version",1)) == 2)
+        state["scenario_message"] = f"Your alert for {help_target['name'] if help_target else 'the uncovered athlete'} is shared with the virtual team. Finish the bout you are following with {state['secondary_name']}."
     elif stage == 12:
         _clear_help(db,conn,athletes)
         recipients = _practice_request_recipients(db,conn,meet_id,state,prepare=True)
@@ -721,11 +867,29 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
     elif stage == 13:
         candidates = [a for a in athletes if a["phase"] == "de" and _eligible(a) and not a["covered_by"] and not a["takeover_coach"]]
         if candidates:
-            athlete = _assign_to_learner(db,conn,candidates[0],state)
-            state.update(bye_id=athlete["id"],bye_name=athlete["name"])
-            state["scenario_message"] = f"The fictional tableau gives {athlete['name']} a bye. Mark it using the normal Bye button."
+            paired = {str(bout[field]) for bout in conn.execute(
+                "SELECT de_bouts.* FROM de_bouts JOIN meet_events ON meet_events.event_id = de_bouts.event_id "
+                "WHERE meet_events.meet_id = ? AND de_bouts.status = 'pending'",(meet_id,),
+            ).fetchall() for field in ("athlete_a_id","athlete_b_id")}
+            candidates = [a for a in candidates if a["id"] not in paired]
+            fresh = [a for a in candidates if not a["de_awaiting_next"] and a["de_wins"] == 0
+                     and a["de_byes"] == 0 and a["call_status"] == "waiting"]
+            if candidates:
+                athlete = _assign_to_learner(db,conn,(fresh or candidates)[0],state)
+                if athlete["de_awaiting_next"] or athlete["call_status"] != "waiting":
+                    athlete = _update(db,conn,athlete,{"de_awaiting_next":0,"call_status":"waiting","live_location":"","reported_at":None,"reported_by":""},"live_update")
+                state.update(bye_id=athlete["id"],bye_name=athlete["name"])
+                state["scenario_message"] = f"The fictional tableau gives {athlete['name']} a bye. Open More actions · {athlete['name']}, then tap Bye."
+            else:
+                state["scenario_message"] = "No unpaired athlete remains for a bye in this replay. The next exercise uses AFM vs AFM."
+                state["bye_unavailable"] = True
     elif stage == 14:
-        eligible = [a for a in athletes if a["phase"] == "de" and _eligible(a)]
+        paired = {str(bout[field]) for bout in conn.execute(
+            "SELECT de_bouts.* FROM de_bouts JOIN meet_events ON meet_events.event_id = de_bouts.event_id "
+            "WHERE meet_events.meet_id = ? AND de_bouts.status = 'pending'",(meet_id,),
+        ).fetchall() for field in ("athlete_a_id","athlete_b_id")}
+        eligible = [a for a in athletes if a["phase"] == "de" and _eligible(a)
+                    and not a["covered_by"] and not a["takeover_coach"] and a["id"] not in paired]
         pairs = [(a,b) for a in eligible for b in eligible if a["id"] != b["id"] and a["event_id"] == b["event_id"]]
         if pairs:
             a,b = pairs[0]
@@ -747,12 +911,19 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
         state["completed_runs"] = int(state.get("completed_runs", 0)) + 1
         state["last_completed_at"] = utc_now()
         state["scenario_message"] = "Exercise complete. The fictional day is read-only. Practice again starts a different variation while this activation remains valid."
-    state["entered_action_id"] = _max_action(conn,meet_id)
+    # DE calls may be saved while the coach is inspecting the pod plan. Do
+    # not erase those valid learner actions when the navigation lesson ends.
+    if stage != 6:
+        state["entered_action_id"] = _max_action(conn,meet_id)
+    _sync_guidance(conn,row,state,stage=stage)
 
 
 def _completed(conn: Any, row: dict, state: dict) -> bool:
     stage,meet_id = int(row["stage"]),str(row["meet_id"])
-    actions = [a for a in _actions(conn,meet_id,int(state.get("entered_action_id",0))) if a["actor"] == state["learner"]]
+    # A call can be entered while inspecting the DE plan. Legacy courses lack
+    # this boundary, so their saved DE snapshots identify valid calls safely.
+    boundary = int(state.get("de_started_action_id",0)) if stage == 6 else int(state.get("entered_action_id",0))
+    actions = [a for a in _actions(conn,meet_id,boundary) if a["actor"] == state["learner"]]
     kinds = {a["action"] for a in actions}
     athletes = _athletes(conn,meet_id)
     primary,secondary = _target(athletes,state,"primary_id"),_target(athletes,state,"secondary_id")
@@ -766,14 +937,16 @@ def _completed(conn: Any, row: dict, state: dict) -> bool:
     if stage in {1,5}:
         return "Live" in views
     if stage == 2:
-        return "help_acknowledged" in kinds
+        return any(action["action"] == "help_acknowledged" and action["athlete_id"] == state.get("primary_id") for action in actions)
     if stage == 3:
-        return bool(kinds & {"pool_result","participation_absent","absent","participation_withdrawn","withdrawn"})
+        return any(action["action"] in {"pool_result","participation_absent","absent","participation_withdrawn","withdrawn"}
+                   and action["athlete_id"] == state.get("primary_id") for action in actions)
     if stage == 4:
         return bool(conn.execute("SELECT 1 FROM coach_availability WHERE meet_id = ? AND coach_name = ? AND is_available = 1",(meet_id,state["learner"])).fetchone())
     if stage == 6:
         return bool(primary and primary["call_status"] != "waiting" and any(
             action["action"] == "live_update" and action["athlete_id"] == primary["id"]
+            and _load(action["new_json"],{}).get("phase") == "de"
             and _load(action["new_json"],{}).get("call_status") in {"on_deck","in_hole","now"}
             for action in actions
         ))
@@ -784,13 +957,19 @@ def _completed(conn: Any, row: dict, state: dict) -> bool:
     if stage == 9:
         return bool(secondary and (secondary["takeover_coach"] == state["learner"] or secondary["covered_by"] == state["learner"]))
     if stage == 10:
-        return bool(secondary and secondary["covered_by"] == state["learner"] and "help_request" in kinds)
+        help_target_id = state.get("help_target_id")
+        return bool(secondary and secondary["covered_by"] == state["learner"] and any(
+            action["action"] == "help_request" and action["athlete_id"] == help_target_id
+            and (int(state.get("help_flow_version",2)) == 1
+                 or not _load(action["previous_json"],{}).get("covered_by"))
+            for action in actions
+        ))
     if stage == 11:
         return any(a["action"] in {"won","lost"} and a["athlete_id"] == state.get("secondary_id") for a in actions)
     if stage == 12:
         return any(a["action"] in {"won","lost"} and a["athlete_id"] == state.get("reassigned_id") and _load(a["previous_json"],{}).get("covered_by") == state["learner"] for a in actions)
     if stage == 13:
-        return any(a["action"] == "bye" and a["athlete_id"] == state.get("bye_id") for a in actions)
+        return bool(state.get("bye_unavailable")) or any(a["action"] == "bye" and a["athlete_id"] == state.get("bye_id") for a in actions)
     if stage in {14,15}:
         kind = "de_bout_create" if stage == 14 else "de_bout_resolve"
         pair = {state.get("pair_a_id"),state.get("pair_b_id")}
@@ -874,14 +1053,24 @@ def tick_training(db: Any, meet_id: str, actor: str | None = None, view: str | N
         if row["status"] in {"running","paused"}:
             _observe(conn,row,state,actor,view)
         if row["status"] == "running" and hub["status"] == "running":
+            if int(row["stage"]) == 10:
+                _ensure_stage10_help_target(db,conn,row,state)
             _process_pending(db,conn,row,state)
             if _completed(conn,row,state):
                 next_stage = min(int(row["stage"])+1,len(TRAINING_STEPS)-1)
                 state.setdefault("history",[]).append({"stage":row["stage"],"completed_at":utc_now(),"by":state["learner"]})
                 state["last_feedback"] = f"Completed: {TRAINING_STEPS[int(row['stage'])]['title']}."
                 _enter_stage(db,conn,row,state,next_stage)
+                if next_stage == 6 and _completed(conn,{**row,"stage":6},state):
+                    # Show the next usable control instead of asking for a
+                    # call already saved on the plan screen and now hidden.
+                    state["history"].append({"stage":6,"completed_at":utc_now(),"by":state["learner"]})
+                    state["last_feedback"] = f"Completed: {TRAINING_STEPS[6]['title']}."
+                    next_stage = 7
+                    _enter_stage(db,conn,row,state,next_stage)
                 row = _persist(conn,row,state,stage=next_stage,status="completed" if next_stage == len(TRAINING_STEPS)-1 else "running")
             else:
+                _sync_guidance(conn,row,state)
                 row = _persist(conn,row,state)
         else:
             row = _persist(conn,row,state)

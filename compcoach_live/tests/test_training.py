@@ -87,11 +87,17 @@ def first_half(db, run, clock, *, outcome="won"):
     step(db,run,10)
     assert not next(row for row in db.list_coach_availability(run["id"]) if row["coach_name"] == coach)["is_available"]
     db.cover_athlete(secondary["event_id"],secondary["id"],coach,coach,location="J2")
-    db.request_help(secondary["event_id"],secondary["id"],coach)
+    step(db,run,10)
+    uncovered = target(db,run,"help_target_id")
+    assert uncovered["id"] != secondary["id"]
+    assert uncovered["call_status"] == "now" and uncovered["live_location"] == "K4"
+    assert not uncovered["covered_by"]
+    db.request_help(uncovered["event_id"],uncovered["id"],coach)
     step(db,run,11)
     clock(6)
     step(db,run,11)
-    assert target(db,run,"secondary_id")["help_acknowledged_by"]
+    assert target(db,run,"help_target_id")["help_acknowledged_by"]
+    assert not target(db,run,"secondary_id")["help_requested_at"]
     db.mark_result(secondary["event_id"],secondary["id"],outcome=outcome,actor=coach)
     step(db,run,12)
     offer = next(request for request in db.list_coverage_requests(run["id"],coach)

@@ -8,10 +8,19 @@ CompCoach answers two operational questions:
 1. Is the athlete still in the competition?
 2. Does the athlete need a coach right now?
 
-It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
-DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
+It stores no bout scores, imported DE bracket, seed, or ranking. It keeps the
+pool W/L summary, DE outcomes and byes, an optional starting tableau size,
+and optional manually linked AFM-versus-AFM opponents.
 
-## Included in v0.10.6
+## Included in v0.10.7
+
+### New in v0.10.7
+
+- **🚨 Need help now** stays directly visible beside DE result controls on every active athlete card in **My Group** and **Team situation**, including athletes assigned to another coach. It is also immediately available on your current-bout bar beside **Won / Lost**, with no confirmation dialog. Requests keep the named athlete and actual strip; a request sent from an obsolete screen cannot overwrite a newer update.
+- **Current bout details** now sits directly beneath the current-bout bar. Use it for the full call/strip and coverage controls; finishing the bout and requesting help remain visible above it. The same current athlete is not repeated in the ordinary active list.
+- The autonomous help lesson first asks you to arrive with the athlete you took over on **J2**. A different, uncovered athlete then appears **Now on K4**. Request help on that athlete's card while continuing your current bout; a virtual colleague responds. The guide follows your saved arrival, help request and result rather than asking for help on the athlete you are already covering. Existing personal practice links and progress are retained.
+- DE progress separates byes from fenced wins: **1 bye · 2 DE wins · Waiting for DE bout 3**. A fresh call or physical coverage changes the waiting text to **DE bout 3**. Admin may optionally set an event's starting DE tableau size; a known start of 256 with three rounds passed gives **T32**. Without this setting, the app shows recorded progress without guessing an official tableau round.
+- **Bye** and **⚠️ Missed coaching** remain in **More actions**; urgent help is available without opening that section. Pool help remains reserved for real emergencies.
 
 ### New in v0.10.6
 
@@ -21,7 +30,7 @@ DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 - Incorrect reports use **Mark report as incorrect**, with an optional correction note and an audit record. Correcting a report does not restore an athlete, undo a result, change assignments, or use the generic athlete-action Undo.
 - Result controls emphasize **WINS / WIN** in green and **LOSSES / LOST** in red. Pool choices **0–6** use equally sized buttons in four columns and two rows, keeping wins and losses easy to tap on a phone.
 - DE cards keep the athlete's name and actual strip beside their actions. The current call is a note; one compact row shows only the next useful choices: **Not called → In the hole / On deck / Now**, **In the hole → On deck / Now**, **On deck → Now**. **Modify call** exposes every status and the actual-strip editor for corrections. Known strips stay out of the default input area; an unknown-strip input remains directly accessible, and calls still save without a strip.
-- **I’m with [athlete]** is a primary action and disappears after physical coverage. An Admin who is also an active coach has the same direct self-coverage action; choosing another coach stays in the collapsed **Coach coverage** section. The compact **WIN / LOST** row precedes **More actions**, which holds optional Bye, help and missed-coaching controls.
+- **I’m with [athlete]** is a primary action and disappears after physical coverage. An Admin who is also an active coach has the same direct self-coverage action; choosing another coach stays in the collapsed **Coach coverage** section. The compact **WIN / LOST** row precedes **More actions**, which holds optional Bye and missed-coaching controls. Help moved out of that section in v0.10.7.
 - Practice recognizes a saved athlete call from either **My Group** or **Team situation**, including **Report athlete location → Publish update**, without repeating it in the other view. The call lesson accepts a confirmed strip too; leave it empty when unknown. Both views also share the same saved data during a real competition. Lessons specifically about visiting a screen still require that visit.
 - The missed-coaching report is available during practice as an optional manual exercise. It is not a required step in the autonomous course.
 
@@ -358,7 +367,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip -o CompCoach_Live_v0.10.6.zip
+unzip -o CompCoach_Live_v0.10.7.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1

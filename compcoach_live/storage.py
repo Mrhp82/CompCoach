@@ -123,6 +123,7 @@ EVENT_MUTABLE_FIELDS = {
     "active_coaches_json",
     "coordinators_json",
     "source_url",
+    "de_start_tableau",
 }
 
 ATHLETE_MUTABLE_FIELDS = {
@@ -222,6 +223,10 @@ class CompCoachDB:
                     coordinator_token TEXT NOT NULL UNIQUE,
                     coach_token TEXT NOT NULL UNIQUE,
                     source_url TEXT NOT NULL DEFAULT '',
+                    de_start_tableau INTEGER CHECK (de_start_tableau IS NULL OR (
+                        de_start_tableau >= 2 AND de_start_tableau <= 4096
+                        AND (de_start_tableau & (de_start_tableau - 1)) = 0)),
+                    de_start_tableau_version INTEGER NOT NULL DEFAULT 0 CHECK (de_start_tableau_version >= 0),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -605,6 +610,18 @@ class CompCoachDB:
             )
             # In-place migration for databases created by an earlier build.
             # SQLite does not support ADD COLUMN IF NOT EXISTS.
+            event_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()
+            }
+            event_migrations = {
+                "de_start_tableau": "INTEGER CHECK (de_start_tableau IS NULL OR ("
+                    "de_start_tableau >= 2 AND de_start_tableau <= 4096 "
+                    "AND (de_start_tableau & (de_start_tableau - 1)) = 0))",
+                "de_start_tableau_version": "INTEGER NOT NULL DEFAULT 0 CHECK (de_start_tableau_version >= 0)",
+            }
+            for column, definition in event_migrations.items():
+                if column not in event_columns:
+                    conn.execute(f"ALTER TABLE events ADD COLUMN {column} {definition}")
             competition_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(competitions)").fetchall()
@@ -2484,6 +2501,7 @@ class CompCoachDB:
                  "id", "name", "timezone", "status", "active_coaches_json",
                  "coordinators_json", "admin_token", "coordinator_token",
                  "coach_token", "source_url", "updated_at", "membership.sort_order",
+                 "de_start_tableau", "de_start_tableau_version",
              )),
             ("athlete", "athletes AS record " + event_scope,
              ("id", "event_id", "version")),
@@ -3407,6 +3425,55 @@ class CompCoachDB:
                 )
             conn.commit()
         return self.get_event(event_id)  # type: ignore[return-value]
+
+    def set_event_de_start_tableau(
+        self, event_id: str, size: int | str | None, actor: str, *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Optionally name the initial DE tableau without changing athlete progress.
+
+        Its own configuration revision rejects an old admin form even when two
+        edits share a timestamp. Clearing the value restores unknown-tableau
+        labels; it never resets wins, byes, calls or manual AFM round labels.
+        """
+        try:
+            from .de_progress import validate_de_start_tableau
+        except ImportError:
+            from de_progress import validate_de_start_tableau
+        value = validate_de_start_tableau(size)
+        clean_actor = " ".join(str(actor or "").split())
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        if expected_version is not None and (
+            isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 0
+        ):
+            raise ValueError("Expected configuration version must be a nonnegative whole number.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            if row is None:
+                raise CompCoachError("Competition not found.")
+            current_version = int(row["de_start_tableau_version"])
+            if expected_version is not None and current_version != expected_version:
+                raise ConcurrentUpdateError("The initial DE tableau changed on another phone. Review its current value.")
+            if row["de_start_tableau"] != value:
+                now = utc_now()
+                conn.execute(
+                    "UPDATE events SET de_start_tableau = ?, de_start_tableau_version = de_start_tableau_version + 1, "
+                    "updated_at = ? WHERE id = ?",
+                    (value, now, event_id),
+                )
+                self._log_action(
+                    conn, event_id=event_id, athlete_id=None, action="de_start_tableau_set",
+                    actor=clean_actor, previous=None,
+                    new={"de_start_tableau": value, "previous_de_start_tableau": row["de_start_tableau"],
+                         "de_start_tableau_version": current_version + 1}, version_after=None,
+                )
+                row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            result = self._event_dict(row)
+            conn.commit()
+        return result  # type: ignore[return-value]
 
     def update_event_source_url(self, event_id: str, url: str) -> None:
         with self._connection() as conn:

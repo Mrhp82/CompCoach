@@ -73,10 +73,10 @@ def test_current_bout_is_kept_out_of_work_queue_and_calls_rank_across_events(gro
     app = _coach(meet)
     cards = _cards(app)
     assert cards.index("EXAMPLE Now") < cards.index("EXAMPLE Deck") < cards.index("EXAMPLE Hole") < cards.index("EXAMPLE Waiting")
-    # The current athlete remains editable in its own collapsed details, after
-    # the actionable queue, instead of appearing twice in the main list.
+    # The current athlete remains editable directly below the busy hero, in
+    # its own collapsed details, and does not reappear in the work queue.
     assert cards.count("EXAMPLE Current") == 1
-    assert cards.index("EXAMPLE Waiting") < cards.index("EXAMPLE Current")
+    assert cards.index("EXAMPLE Current") < cards.index("EXAMPLE Now")
     assert not any(value.startswith("#### ⭐") for value in markdown_values(app))
     assert not app.exception
 

@@ -1,6 +1,6 @@
 # CompCoach — esercitazione autonoma
 
-Istruzioni per CompCoach Live v0.10.6.
+Istruzioni per CompCoach Live v0.10.7.
 
 L'amministratore attiva il link una volta, lo condivide e può disinteressarsi
 dell'esercitazione. Non deve interpretare il coordinatore, generare chiamate o
@@ -60,7 +60,7 @@ Esempi di situazioni simulate:
 - Il coach si segna con un atleta: un altro atleta di cui è responsabile viene chiamato. Dopo circa 15 secondi può intervenire un collega virtuale; in altre ripetizioni nessuno è libero e l'avviso resta aperto.
 - Il risultato libera il coach: dopo una breve attesa arriva una chiamata improvvisa Now, On deck oppure In the hole per un atleta con coach impegnato. Il coach può premere **I'll take over**, poi registrare la presenza fisica in pedana.
 - Il coordinatore simulato invia una richiesta di copertura per un assalto improvviso a più coach disponibili, compreso quello che si esercita. Chi preme per primo **I'll cover this bout** prende temporaneamente quell'atleta; la richiesta si chiude per gli altri destinatari. L'atleta compare in **My Group**, anche se appartiene a un altro evento, e il coach che accetta non risulta più disponibile. Il piano originale dei coach e dei pod resta invariato. **I’m with [atleta]** registra poi l'arrivo fisico e avvia il timer di occupazione.
-- Una richiesta d'aiuto riceve una risposta virtuale; la chiamata successiva può avere una pedana diversa dalla precedente.
+- Dopo la presa in carico, il coach registra l'arrivo con **I’m with [atleta]** sulla **J2**. Solo a quel punto viene chiamato un altro atleta, **Now sulla K4**, senza copertura. La guida indica il suo nome: premi **🚨 Need help now** sulla scheda di questo secondo atleta, mentre continui a seguire quello sulla J2. Un collega virtuale risponde e copre l'assalto; registra poi **Won / Lost** per l'atleta che stai seguendo. La chiamata successiva può avere una pedana diversa dalla precedente.
 
 Nei gironi, **Need help** serve per emergenze reali: per esempio diversi
 assalti già svolti senza assistenza o un atleta lasciato senza coaching che si
@@ -83,8 +83,10 @@ assalti già accettati, coperti o conclusi. Il coach può così riprendere la
 lezione dopo una pausa senza intervento dell'amministratore.
 
 Quando il coach è fisicamente con un atleta, **My Group** mostra subito il
-nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **WIN / LOST**
-sono nella stessa barra: il risultato si salva con un tap e libera il coach.
+nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **Won / Lost**
+e **🚨 Need help now** sono nella stessa barra. Il risultato si salva con un
+tap e libera il coach. **Current bout details**, subito sotto, contiene i
+controlli completi per correggere chiamata, pedana o copertura.
 Il pulsante **I’m with [atleta]** non compare più quando la presenza è già
 registrata. Le chiamate successive hanno priorità sugli atleti non ancora
 chiamati. Le vittorie in diretta fanno ruotare la coda; i gironi conclusi e
@@ -114,7 +116,24 @@ Il pulsante principale **I’m with [atleta]** registra la presenza e scompare
 dopo il salvataggio. Anche Admin, quando è uno dei coach presenti, può usarlo
 direttamente per sé. La selezione di un altro maestro resta nella sezione
 chiusa **Coach coverage**. La riga **WIN / LOST** precede **More actions**, dove
-trovi Bye, richiesta d'aiuto e segnalazione di mancato coaching.
+trovi Bye e segnalazione di mancato coaching. **🚨 Need help now** resta
+visibile sulla scheda, anche in **Team situation** per un atleta assegnato
+a un altro coach: non occorre aprire **More actions** né confermare il tap.
+Se sei impegnato con un atleta e ne viene chiamato un altro senza copertura,
+invia la richiesta dalla scheda dell'atleta che ha bisogno di un collega.
+
+## Leggere l'avanzamento nelle dirette
+
+Un Bye fa avanzare senza contare come vittoria di un assalto disputato.
+Per esempio, **1 bye · 2 DE wins · Waiting for DE bout 3** indica un Bye,
+due vittorie e l'attesa del terzo assalto effettivo. Quando arriva una
+chiamata oppure registri la copertura fisica, la nota diventa **DE bout 3**.
+Il numero dell'assalto effettivo e i turni avanzati possono quindi differire.
+
+Admin può indicare facoltativamente la dimensione iniziale del tabellone DE
+di ciascun evento. Con un tabellone iniziale di 256 e tre turni passati,
+l'app può mostrare **T32**. Senza quel dato mostra Bye, vittorie e stato
+della chiamata, senza attribuire un turno ufficiale del tabellone.
 
 ## Esercizio facoltativo: assalto senza coaching
 
@@ -195,12 +214,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.6.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.7.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.6.zip
+unzip -o CompCoach_Live_v0.10.7.zip
 cd compcoach_live
 bash launch.sh
 ```

@@ -124,7 +124,40 @@ def _expiry_label(value: Any, meet: dict[str, Any]) -> str:
         return str(value)
 
 
-def _render_persistent_guide(stage: int, stage_count: int, title: str, instruction: str, paused: bool) -> None:
+def _next_guide_instruction(db: Any, metadata: dict[str, Any], instruction: str) -> str:
+    """A reviewed AFM pairing has one remaining button, not another review."""
+    stage = int(metadata.get("stage_index", metadata.get("stage", 0)) or 0)
+    state = metadata.get("state") or {}
+    expected_pair = {str(state.get("pair_a_id") or ""), str(state.get("pair_b_id") or "")}
+    if stage != 14 or "" in expected_pair or len(expected_pair) != 2:
+        return instruction
+    for key in st.session_state:
+        if not str(key).startswith("live_create_pending_"):
+            continue
+        pending = st.session_state[key]
+        if not isinstance(pending, dict) or {str(pending.get("a") or ""), str(pending.get("b") or "")} != expected_pair:
+            continue
+        event_id = str(key).removeprefix("live_create_pending_")
+        athletes = [db.get_athlete(event_id, str(pending.get(which) or "")) for which in ("a", "b")]
+        if any(
+            row is None or row.get("active_state") != "active"
+            or row.get("participation_status", "active") != "active"
+            for row in athletes
+        ):
+            continue
+        if [int(row.get("version") or 0) for row in athletes] != pending.get("versions"):
+            continue
+        return (
+            f"In Team situation → AFM vs AFM, tap Confirm pairing for "
+            f"{state.get('pair_a_name') or athletes[0]['name']} and {state.get('pair_b_name') or athletes[1]['name']}."
+        )
+    return instruction
+
+
+def _render_persistent_guide(
+    stage: int, stage_count: int, title: str, instruction: str, paused: bool, *,
+    guide_view: str = "", target_id: str = "", target_name: str = "",
+) -> None:
     """Keep the next action visible beneath Streamlit's header while scrolling.
 
     A scoped top inset reserves the guide's full height at the start of the
@@ -162,7 +195,9 @@ def _render_persistent_guide(stage: int, stage_count: int, title: str, instructi
           .cc-practice-guide-action {{font-size: 13.5px; line-height: 1.3;}}
         }}
         </style>
-        <div class="cc-practice-guide" role="note" aria-label="Training practice guide">
+        <div class="cc-practice-guide" role="note" aria-label="Training practice guide"
+             data-stage-index="{stage}" data-guide-view="{escape(guide_view, quote=True)}"
+             data-target-athlete="{escape(target_id, quote=True)}" data-target-name="{escape(target_name, quote=True)}">
           <div class="cc-practice-guide-top">
             <span class="cc-practice-guide-step">🧪 Step {min(stage + 1, stage_count)} of {stage_count}{paused_label}</span>
             <span class="cc-practice-guide-title" title="{escape(title, quote=True)}">{escape(title)}</span>
@@ -196,6 +231,8 @@ def render_training_panel(
     actor: str,
     open_callback: Callable[[dict[str, Any]], Any] | None = None,
     home_callback: Callable[[], Any] | None = None,
+    current_view: str | None = None,
+    navigate_callback: Callable[[str], Any] | None = None,
 ) -> None:
     """Show the personal guided step without requiring an instructor."""
 
@@ -213,10 +250,31 @@ def render_training_panel(
         role == "coach" and not is_hub and status in {"running", "paused"} and not metadata.get("expired")
     )
     if persistent_guide:
+        guide_view = str(metadata.get("guide_view") or "")
+        guide_instruction = _next_guide_instruction(
+            db, metadata, str(metadata.get("guide_instruction") or instruction),
+        )
         _render_persistent_guide(
             stage, stage_count, stage_title,
-            str(metadata.get("guide_instruction") or instruction), status == "paused",
+            guide_instruction, status == "paused",
+            guide_view=guide_view,
+            target_id=str(metadata.get("guide_target_id") or ""),
+            target_name=str(metadata.get("guide_target_name") or ""),
         )
+        # A coach can follow an instruction from either screen. Offer a
+        # deliberate shortcut only when its target screen differs; it never
+        # performs the athlete action or advances the exercise itself.
+        if (
+            navigate_callback is not None
+            and current_view is not None
+            and guide_view in {"My Group", "Live"}
+            and guide_view != current_view
+        ):
+            label = "Open Team situation" if guide_view == "Live" else "Open My Group"
+            st.button(
+                label, key=f"training_task_view_{meet_id}_{stage}_{guide_view}",
+                width="stretch", on_click=navigate_callback, args=(guide_view,),
+            )
         _render_hint(metadata, meet, status, instruction)
 
     with (nullcontext() if persistent_guide else st.container(border=True)):

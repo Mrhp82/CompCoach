@@ -57,6 +57,7 @@ try:
     )
     from compcoach_live.busy_board import render_busy_coach_board
     from compcoach_live.de_rotation import ordered_de_athletes
+    from compcoach_live.de_progress import describe_de_progress
     from compcoach_live.de_corrections_ui import render_de_result_corrections
     from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
@@ -97,6 +98,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
     from busy_board import render_busy_coach_board
     from de_rotation import ordered_de_athletes
+    from de_progress import describe_de_progress
     from de_corrections_ui import render_de_result_corrections
     from schedule_setup import render_competition_schedule
     from training import get_training, join_training, list_training_sessions, tick_training
@@ -112,7 +114,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.6"
+APP_VERSION = "0.10.7"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -425,15 +427,9 @@ def planned_coaches(athlete: dict) -> str:
     return " · ".join(coaches) or "No planned coach"
 
 
-def de_progress_text(athlete: dict) -> str:
-    wins = int(athlete.get("de_wins") or 0)
-    byes = int(athlete.get("de_byes") or 0)
-    rounds = wins + byes
-    return (
-        f"{rounds} round{'s' if rounds != 1 else ''} passed"
-        f" · {byes} bye{'s' if byes != 1 else ''}"
-        f" · {wins} win{'s' if wins != 1 else ''}"
-    )
+def de_progress_text(athlete: dict, event: dict | None = None) -> str:
+    context = event if event is not None else {"de_start_tableau": athlete.get("de_start_tableau")}
+    return describe_de_progress(athlete, context)["progress_summary"]
 
 
 def load_meet_context(meet_id: str) -> tuple[list[dict], list[dict], dict[str, dict]]:
@@ -445,6 +441,7 @@ def load_meet_context(meet_id: str) -> tuple[list[dict], list[dict], dict[str, d
             athlete = dict(stored)
             athlete["event_name"] = event["name"]
             athlete["event_sort_order"] = int(event.get("sort_order") or 0)
+            athlete["de_start_tableau"] = event.get("de_start_tableau")
             athletes.append(athlete)
     return events, athletes, event_by_id
 
@@ -1904,6 +1901,50 @@ def render_pool_wave_control(event: dict, actor: str) -> list[dict]:
     return waves
 
 
+def save_de_start_tableau_snapshot(
+    event_id: str, actor: str, version: int, size_key: str
+) -> None:
+    try:
+        db.set_event_de_start_tableau(
+            event_id, st.session_state.get(size_key), actor,
+            expected_version=version,
+        )
+        st.session_state[f"de_tableau_notice_{event_id}"] = (
+            True, "Starting DE tableau saved."
+        )
+    except (CompCoachError, TypeError, ValueError) as exc:
+        st.session_state[f"de_tableau_notice_{event_id}"] = (False, str(exc))
+
+
+def render_de_start_tableau(event: dict, actor: str) -> None:
+    with st.expander("DE round tracking", expanded=False):
+        st.caption(
+            "Optional: enter this event's first DE tableau to show each athlete's "
+            "current round. Byes count as rounds passed, not DE wins."
+        )
+        notice = st.session_state.pop(f"de_tableau_notice_{event['id']}", None)
+        if notice:
+            (st.success if notice[0] else st.error)(notice[1])
+        version = int(event.get("de_start_tableau_version") or 0)
+        size_key = f"de_start_tableau_{event['id']}_v{version}"
+        choices = [None, *(2 ** exponent for exponent in range(1, 13))]
+        current = event.get("de_start_tableau")
+        writable = event.get("status") == "open" and bool(actor)
+        with st.form(f"de_start_tableau_form_{event['id']}_v{version}"):
+            st.selectbox(
+                "Starting DE tableau (optional)", choices,
+                index=choices.index(current) if current in choices else 0,
+                format_func=lambda size: "Not set" if size is None else f"T{size}",
+                disabled=not writable, key=size_key,
+            )
+            st.form_submit_button(
+                "Save DE starting tableau", width="stretch", disabled=not writable,
+                key=f"save_de_start_tableau_{event['id']}_v{version}",
+                on_click=save_de_start_tableau_snapshot,
+                args=(event["id"], actor, version, size_key),
+            )
+
+
 def render_assignments(event: dict, actor: str) -> None:
     st.subheader("Coach assignments")
     all_athletes = db.list_athletes(event["id"])
@@ -1912,6 +1953,10 @@ def render_assignments(event: dict, actor: str) -> None:
         return
     phase_label = select_nav(["Pools", "Direct Elimination"], f"assignment_phase_{event['id']}")
     phase = "pools" if phase_label == "Pools" else "de"
+    if phase == "de":
+        render_de_start_tableau(event, actor)
+        for athlete in all_athletes:
+            athlete["de_start_tableau"] = event.get("de_start_tableau")
     render_attendance_control(event, phase, all_athletes, actor)
     athletes = [a for a in all_athletes if is_operational_athlete(a)]
     visible = [a for a in athletes if a["phase"] == phase]
@@ -2323,24 +2368,31 @@ def render_help_alerts(event: dict, role: str, actor: str, athletes: list[dict])
     st.divider()
 
 
-def render_athlete_help_control(event: dict, actor: str, athlete: dict) -> None:
+def request_athlete_help_snapshot(event_id: str, athlete_id: str, actor: str, version: int) -> None:
+    try:
+        saved = db.request_help(event_id, athlete_id, actor, expected_version=version)
+        st.session_state["de_fast_notice"] = (True, f"Help request sent for {saved['name']}.")
+    except (CompCoachError, TypeError, ValueError) as exc:
+        st.session_state["de_fast_notice"] = (False, str(exc))
+    st.session_state["de_fast_refresh"] = True
+
+
+def render_athlete_help_control(
+    event: dict, actor: str, athlete: dict, *, key_prefix: str = "",
+) -> None:
+    if event.get("status") != "open" or not actor or not is_operational_athlete(athlete):
+        return
     if athlete.get("phase") == "pools":
         st.caption("Pools: use Need help only for a real emergency, such as several uncovered bouts or an athlete left without support. All coaches are busy; use it sparingly.")
     if athlete.get("help_requested_at"):
         st.caption("🚨 Help request active — status is shown at the top of the board.")
-    elif st.button(
-        "🚨 Need help now", type="primary", width="stretch",
-        key=f"help_request_{athlete['id']}",
-    ):
-        try:
-            db.request_help(
-                event["id"], athlete["id"], actor,
-                expected_version=athlete["version"],
-            )
-            st.toast(f"Help request sent for {athlete['name']}.")
-            st.rerun()
-        except CompCoachError as exc:
-            show_error(exc)
+    else:
+        st.button(
+            "🚨 Need help now", type="primary", width="stretch",
+            key=f"{key_prefix}help_request_{athlete['id']}",
+            on_click=request_athlete_help_snapshot,
+            args=(athlete["event_id"], athlete["id"], actor, int(athlete["version"])),
+        )
 
 
 def render_athlete_card(
@@ -2378,9 +2430,10 @@ def render_athlete_card(
                 f"<span class='cc-event-tag'>{esc(athlete_event_label(athlete))}</span>",
                 unsafe_allow_html=True,
             )
+        progress = describe_de_progress(athlete, event) if athlete.get("phase") == "de" else {}
         progress_tag = (
-            f" <span class='cc-rounds'>· {esc(de_progress_text(athlete).split(' · ')[0])}</span>"
-            if athlete.get("phase") == "de" and (athlete.get("de_wins") or athlete.get("de_byes")) else ""
+            f" <span class='cc-rounds'>· {esc(progress['round_label'])}</span>"
+            if progress.get("round_label") else ""
         )
         st.markdown(f"<div class='cc-athlete'>{icon} {esc(athlete['name'])}{progress_tag}</div>", unsafe_allow_html=True)
         if personal:
@@ -2425,14 +2478,16 @@ def render_athlete_card(
 
         if personal:
             render_pool_result_editor(event, actor, athlete)
-        if athlete.get("de_wins") or athlete.get("de_byes") or athlete.get("last_de_result"):
+        if athlete.get("phase") == "de":
             last_result = str(athlete.get("last_de_result") or "").title()
             last_note = f" · last: {last_result}" if last_result else ""
             st.markdown(
-                f"<div class='cc-result'>DE: {esc(de_progress_text(athlete))}"
+                f"<div class='cc-result'>{esc(de_progress_text(athlete, event))}"
                 f"{esc(last_note)}</div>",
                 unsafe_allow_html=True,
             )
+            if progress.get("inconsistent"):
+                st.caption("Check the starting tableau and recorded DE results; this progress is inconsistent.")
 
         if not allow_operational_actions:
             return
@@ -2540,9 +2595,8 @@ def render_athlete_card(
                         st.button(outcome.title(), key=f"{outcome}_{athlete['id']}",
                                   width="stretch", on_click=apply_de_result_snapshot,
                                   args=(event["id"], athlete["id"], outcome, actor, snapshot))
+            render_athlete_help_control(event, actor, athlete)
             with st.expander(f"More actions · {athlete['name']}", expanded=False):
-                if personal:
-                    render_athlete_help_control(event, actor, athlete)
                 render_missed_coaching_control(
                     db, event, actor, athlete,
                     key_prefix=prefix, meet_state=meet_state,
@@ -2581,6 +2635,8 @@ def render_current_bout_actions(meet: dict, actor: str, athlete: dict) -> None:
     if not is_operational_athlete(athlete):
         return
     snapshot = de_result_snapshot(athlete, list_de_bouts(db, athlete["event_id"]))
+    child = db.get_event(athlete["event_id"])
+    st.markdown(f"**{de_progress_text(athlete, child)}**")
     st.caption(f"{athlete_event_label(athlete)} · Record this bout to finish coverage")
     with st.container(key=f"cc_result_actions_current_{athlete['id']}"):
         won, lost = st.columns(2)
@@ -2593,6 +2649,11 @@ def render_current_bout_actions(meet: dict, actor: str, athlete: dict) -> None:
                     on_click=apply_de_result_snapshot,
                     args=(athlete["event_id"], athlete["id"], outcome, actor, snapshot),
                 )
+    render_athlete_help_control(meet, actor, athlete, key_prefix="current_")
+    if child:
+        with st.expander("Current bout details", expanded=False):
+            st.caption("Edit this athlete's call or strip here. Won, Lost and Need help are above.")
+            render_athlete_card(child, "coach", actor, athlete, personal=True, meet_state=meet)
 
 
 def apply_de_result_snapshot(event_id, athlete_id, outcome, actor, snapshot):
@@ -2738,11 +2799,18 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
         "Out": out,
     }
     selected = mapping[view]
+    # The coach's current athlete already has its full controls in the hero.
+    # Avoid rendering the same widgets twice when Covered Now is selected.
+    if current_status.get("is_busy"):
+        selected = [row for row in selected if row["id"] != current_status.get("busy_athlete_id")]
     if not selected:
         empty_messages = {
             "Uncovered": "Every active athlete is currently covered.",
             "Needs Coach": "No athlete currently needs coverage.",
-            "Covered Now": "No athlete is currently covered.",
+            "Covered Now": (
+                "Your current athlete is shown above. No other athlete is currently covered."
+                if current_status.get("is_busy") else "No athlete is currently covered."
+            ),
             "No Current Call": "Every active athlete currently has a live call.",
             "Out": "No athletes have been marked out.",
         }
@@ -3045,11 +3113,6 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
     queued_de = [row for row in active_mine if row not in current_de]
     render_de_wheel(event, role, actor, queued_de, event_by_id, personal=True,
                     key_prefix="personal", bouts_by_event=bouts_by_event, prioritize_calls=True)
-    if current_de:
-        with st.expander("Current bout details", expanded=False):
-            for athlete in current_de:
-                render_athlete_card(event_by_id[athlete["event_id"]], role, actor, athlete,
-                                    personal=True, afm_bouts=bouts_by_event.get(athlete["event_id"], []))
     for child in events:
         if any(row["phase"] == "de" and row["event_id"] == child["id"] for row in active_mine):
             render_de_bouts(db, child, actor, key_prefix="personal")
@@ -3815,6 +3878,19 @@ def render_snapshot(function):
     return render
 
 
+def open_training_task_view(meet_id: str, role: str, view: str) -> None:
+    if view not in {"My Group", "Live"}:
+        return
+    nav_key = f"{role}_nav_{meet_id}"
+    st.session_state[nav_key] = view
+    st.session_state[f"nav_choice_{nav_key}"] = view
+    if view == "Live":
+        filter_key = f"live_view_{meet_id}_{role}"
+        st.session_state[filter_key] = "Uncovered"
+        st.session_state[f"nav_choice_{filter_key}"] = "Uncovered"
+    st.rerun(scope="app")
+
+
 @st.fragment
 @render_snapshot
 def training_fragment(meet_id: str, role: str, actor: str, metadata: dict) -> None:
@@ -3824,6 +3900,8 @@ def training_fragment(meet_id: str, role: str, actor: str, metadata: dict) -> No
             db, meet, metadata, role, actor,
             open_callback=lambda practice: reopen_training_run(practice, role, actor),
             home_callback=lambda: set_open_home(meet, actor),
+            current_view=current_training_view(meet_id, role),
+            navigate_callback=lambda view: open_training_task_view(meet_id, role, view),
         )
 
 
@@ -4001,7 +4079,7 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
                     mixed = len({frozenset(assigned_coach_names(row)) for row in pod_rows}) > 1
                     for row in pod_rows:
                         note = " · Coaches: " + " / ".join(assigned_coach_names(row)) if mixed else ""
-                        progress = " · " + de_progress_text(row) if row.get("de_wins") or row.get("de_byes") else ""
+                        progress = " · " + de_progress_text(row, child) if row.get("de_wins") or row.get("de_byes") or child.get("de_start_tableau") else ""
                         lines.append(f"• {row['name']}{note}{progress}")
                     lines.append("")
                 for bout in list_de_bouts(db, child["id"]):
@@ -4112,6 +4190,7 @@ def render_share(event: dict) -> None:
 
 
 ACTION_LABELS = {
+    "de_start_tableau_set": "updated the starting DE tableau",
     "missed_coaching_reported": "recorded missed coaching",
     "missed_coaching_corrected": "corrected a missed-coaching report",
     "coverage_requested": "requested emergency coverage",
@@ -4238,6 +4317,7 @@ def render_event_management(event: dict) -> None:
                     st.rerun()
                 except (CompCoachError, ValueError) as exc:
                     show_error(exc)
+            render_de_start_tableau(child, rollover_actor(event, "admin"))
             if writable and not child.get("athlete_count"):
                 with st.expander("Remove empty event", expanded=False):
                     confirm = st.checkbox(

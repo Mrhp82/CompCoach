@@ -205,19 +205,23 @@ def test_bye_is_saved_with_one_tap_and_rounds_include_byes_without_counting_a_wi
     for _ in range(2):
         database.report_call(event["id"], athlete["id"], status="on_deck", location="P1", actor="Sam")
         database.mark_result(event["id"], athlete["id"], outcome="won", actor="Sam")
+    saved = database.get_athlete(event["id"], athlete["id"])
+    assert saved["de_byes"] == 1 and saved["de_wins"] == 2
+    assert saved["de_rounds_passed"] == 3
+    progress = "1 bye · 2 DE wins · Waiting for DE bout 3"
     observer = open_board(meet["id"], meet["coach_token"], "Carmine")
-    assert "3 rounds passed · 1 bye · 2 wins" in _visible_text(observer)
+    assert progress in _visible_text(observer)
     assert athlete["name"] in _active_cards(observer)
     assert not any("Ready for next bout" in button.label for button in observer.button)
 
     admin = open_board(meet["id"], meet["admin_token"], "Carmine")
     nav_named(admin, "admin_nav_").set_value("Live").run()
-    assert "3 rounds passed · 1 bye · 2 wins" in _visible_text(admin)
+    assert progress in _visible_text(admin)
     assignments = next(section for section in admin.expander if section.label == "All assignments")
-    assert "3 rounds passed · 1 bye · 2 wins" in "\n".join(markdown_values(assignments))
+    assert progress in "\n".join(markdown_values(assignments))
     nav_named(admin, "admin_nav_").set_value("Share").run()
     message = "\n".join(code.value for code in admin.code)
-    assert "3 rounds passed · 1 bye · 2 wins" in message
+    assert progress in message
     assert not observer.exception and not admin.exception
 
 

@@ -169,7 +169,11 @@ def test_virtual_coordinator_requests_temporary_coverage_without_changing_plan(c
     database.take_over_athlete(secondary["event_id"], secondary["id"], "Alex", "Alex")
     assert _tick(database, run)["stage"] == 10
     database.cover_athlete(secondary["event_id"], secondary["id"], "Alex", "Alex", location="J2")
-    database.request_help(secondary["event_id"], secondary["id"], "Alex", location="J2")
+    assert _tick(database, run)["stage"] == 10
+    uncovered = _target(database, run, "help_target_id")
+    assert uncovered["id"] != secondary["id"] and not uncovered["covered_by"]
+    assert uncovered["call_status"] == "now" and uncovered["live_location"] == "K4"
+    database.request_help(uncovered["event_id"], uncovered["id"], "Alex", location="K4")
     assert _tick(database, run)["stage"] == 11
     previous_plans = {
         athlete["id"]: athlete.get("de_coaches", [])

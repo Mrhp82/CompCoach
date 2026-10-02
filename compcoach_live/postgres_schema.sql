@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS events (
     coordinator_token TEXT NOT NULL UNIQUE,
     coach_token TEXT NOT NULL UNIQUE,
     source_url TEXT NOT NULL DEFAULT '',
+    de_start_tableau INTEGER CHECK (de_start_tableau IS NULL OR (
+        de_start_tableau >= 2 AND de_start_tableau <= 4096
+        AND (de_start_tableau & (de_start_tableau - 1)) = 0)),
+    de_start_tableau_version INTEGER NOT NULL DEFAULT 0 CHECK (de_start_tableau_version >= 0),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
