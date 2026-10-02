@@ -40,3 +40,26 @@ def test_prepare_is_idempotent_and_never_creates_real_secrets(tmp_path: Path):
     assert not (tmp_path / ".streamlit" / "secrets.toml").exists()
     assert (tmp_path / ".streamlit" / "secrets.example.toml").is_file()
     assert (tmp_path / "requirements.txt").read_text() == "-r compcoach_live/requirements.txt\n"
+    assert (tmp_path / "packages.txt").read_text().split() == ["libgl1"]
+
+
+def test_prepare_packages_preserves_dependencies_and_removes_comments(tmp_path: Path):
+    packages = tmp_path / "packages.txt"
+    packages.write_text("# Existing dependencies\nffmpeg\nlibglib2.0-0 # images\n")
+
+    prepare(tmp_path)
+
+    assert packages.read_text() == "ffmpeg\nlibglib2.0-0\nlibgl1\n"
+    assert "# CompCoach deployment" in (tmp_path / ".gitignore").read_text()
+    first_contents = packages.read_bytes()
+    prepare(tmp_path)
+    assert packages.read_bytes() == first_contents
+
+
+def test_prepare_repairs_legacy_packages_when_required_package_already_exists(tmp_path: Path):
+    packages = tmp_path / "packages.txt"
+    packages.write_text("\n# CompCoach deployment\nlibgl1\n")
+
+    prepare(tmp_path)
+
+    assert packages.read_text() == "libgl1\n"

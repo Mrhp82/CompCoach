@@ -7,4 +7,3 @@
 **/backups/
 __pycache__/
 .pytest_cache/
-*.zip

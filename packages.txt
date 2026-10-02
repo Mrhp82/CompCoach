@@ -1,3 +1,1 @@
-
-# CompCoach deployment
 libgl1

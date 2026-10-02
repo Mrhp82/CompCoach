@@ -90,8 +90,10 @@ python compcoach_live/prepare_deployment.py
 
 Lo script usa i modelli in `compcoach_live/deployment/repository_root`. Crea
 configurazione, esempio Secrets e requirements nella radice solo se mancano;
-integra `packages.txt` e `.gitignore` senza sostituire le righe esistenti. Non
-crea né legge un file Secrets reale. Se conserva un `requirements.txt` personale,
+integra `.gitignore` e conserva i pacchetti già presenti in `packages.txt`.
+Da v0.10.2 rimuove i commenti da `packages.txt`, compresa l'intestazione aggiunta
+dalle versioni precedenti: l'hosting richiede solo nomi di pacchetti, uno per
+riga. Non crea né legge un file Secrets reale. Se conserva un `requirements.txt` personale,
 verifica che includa anche `-r compcoach_live/requirements.txt`. Non spostare
 `app.py` fuori dalla sottocartella.
 

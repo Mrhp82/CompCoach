@@ -11,7 +11,11 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.10.1
+## Included in v0.10.2
+
+### New in v0.10.2
+
+- Community Cloud deployment preparation now writes only package names to `packages.txt` and repairs comments left by earlier releases while preserving existing dependencies.
 
 ### New in v0.10.1
 

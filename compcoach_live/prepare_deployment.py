@@ -30,6 +30,26 @@ def prepare(root: Path, *, templates: Path | None = None) -> list[str]:
     for relative in (Path(".gitignore"), Path("packages.txt")):
         target = root / relative
         existing = target.read_text() if target.exists() else ""
+        if relative.name == "packages.txt":
+            # Community Cloud passes whitespace-separated tokens to apt-get;
+            # comments are not ignored. Also repair headers from older releases.
+            def package_names(contents: str) -> list[str]:
+                return list(dict.fromkeys(
+                    name
+                    for line in contents.splitlines()
+                    for name in line.partition("#")[0].split()
+                ))
+
+            names = package_names(existing)
+            required_names = package_names((templates / relative).read_text())
+            names.extend(name for name in required_names if name not in names)
+            contents = "\n".join(names) + ("\n" if names else "")
+            if contents != existing:
+                target.write_text(contents)
+                messages.append(f"Integrato: {relative.as_posix()}")
+            else:
+                messages.append(f"Già pronto: {relative.as_posix()}")
+            continue
         existing_lines = {line.strip() for line in existing.splitlines()}
         required = [
             line for line in (templates / relative).read_text().splitlines()

@@ -93,7 +93,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.10.2"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [

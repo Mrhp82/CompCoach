@@ -75,12 +75,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.1.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.2.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.1.zip
+unzip -o CompCoach_Live_v0.10.2.zip
 cd compcoach_live
 bash launch.sh
 ```
