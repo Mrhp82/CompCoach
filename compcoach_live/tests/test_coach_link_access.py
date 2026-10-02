@@ -47,7 +47,7 @@ def test_public_coach_link_opens_identity_and_normal_navigation_without_admin_pi
 
     button_named(app, "Casey").click().run()
     navigation = nav_named(app, "coach_nav_")
-    assert navigation.options == ["My Group", "Live"]
+    assert navigation.options == ["My Group", "Team situation"]
     assert navigation.value == "My Group"
     _assert_no_password_or_pin(app)
     navigation.set_value("Live").run()
@@ -74,7 +74,7 @@ def test_public_practice_link_requires_only_name_and_starts_without_admin_pin(pu
     run_id = event[0] if isinstance(event, list) else event
     assert run_id != hub["id"]
     assert get_training(database, run_id)["learner"] == "Coach Jamie"
-    assert nav_named(app, "coach_nav_").options == ["My Group", "Live"]
+    assert nav_named(app, "coach_nav_").options == ["My Group", "Team situation"]
     _assert_no_password_or_pin(app)
     nav_named(app, "coach_nav_").set_value("Live").run()
     assert nav_named(app, "coach_nav_").value == "Live"

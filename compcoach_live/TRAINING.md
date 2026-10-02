@@ -28,7 +28,7 @@ Il titolo della pratica e la guida 🧪 distinguono l'esercitazione dalla gara.
 
 Una guida compatta resta fissa in alto anche scorrendo la pagina e indica il
 passaggio corrente e la prossima azione, usando i veri pulsanti di **My Group**
-e **Live**. **Need a hint?** contiene istruzioni complete, scenario, riscontro
+e **Team situation**. **Need a hint?** contiene istruzioni complete, scenario, riscontro
 sulle azioni e scadenza dell'accesso. Non ci sono
 pulsanti fittizi per simulare vittorie o coperture: le azioni si salvano e
 modificano gli stessi dati operativi usati in gara, all'interno della pratica.
@@ -39,11 +39,17 @@ Comprende richieste d'aiuto, prese in carico, risultati Won/Lost, Bye e un
 assalto AFM contro AFM, fino alla chiusura della giornata fittizia. L'app
 prepara autonomamente le importazioni, gli assegnamenti e i semafori di fase.
 
+Gli assegnamenti ordinari ai gironi e ai pod sono impliciti: non devi
+accettare ogni atleta. **My Group** mostra il lavoro assegnato;
+**Team situation** mostra la situazione condivisa, i coach disponibili e le
+richieste urgenti. Il nuovo nome sostituisce l'etichetta **Live** della
+pagina condivisa; i collegamenti già salvati continuano a funzionare.
+
 Esempi di situazioni simulate:
 
 - Il coach si segna con un atleta: un altro atleta di cui è responsabile viene chiamato. Dopo circa 15 secondi può intervenire un collega virtuale; in altre ripetizioni nessuno è libero e l'avviso resta aperto.
 - Il risultato libera il coach: dopo una breve attesa arriva una chiamata improvvisa Now, On deck oppure In the hole per un atleta con coach impegnato. Il coach può premere **I'll take over**, poi registrare la presenza fisica in pedana.
-- Il coordinatore simulato assegna un altro atleta al coach rimasto libero. Il nuovo incarico compare in **My Group**, anche quando riguarda un altro evento. Il coach preme **Accept assignment** per confermare la responsabilità; **I’m with [atleta]** registra invece l'arrivo fisico e avvia il timer di occupazione.
+- Il coordinatore simulato invia una richiesta di copertura per un assalto improvviso a più coach disponibili, compreso quello che si esercita. Chi preme per primo **I'll cover this bout** prende temporaneamente quell'atleta; la richiesta si chiude per gli altri destinatari. L'atleta compare in **My Group**, anche se appartiene a un altro evento, e il coach che accetta non risulta più disponibile. Il piano originale dei coach e dei pod resta invariato. **I’m with [atleta]** registra poi l'arrivo fisico e avvia il timer di occupazione.
 - Una richiesta d'aiuto riceve una risposta virtuale; la chiamata successiva può avere una pedana diversa dalla precedente.
 
 Nei gironi, **Need help** serve per emergenze reali: per esempio diversi
@@ -51,6 +57,20 @@ assalti già svolti senza assistenza o un atleta lasciato senza coaching che si
 sente abbandonato. Gli altri coach stanno già seguendo i propri gruppi. La
 lezione simulata presenta un'emergenza di questo tipo e insegna a rispondere
 con **I’m coming**.
+
+In gara, Admin e Coordinatore possono anche inviare **Request coverage** per
+un singolo assalto a uno o più coach disponibili. Accettare prenota la
+responsabilità; nei gironi, il coach di emergenza conferma il proprio arrivo
+con **I’m with [atleta]**. Al completamento del risultato del girone vengono
+puliti chiamata, richiesta d'aiuto, presa in carico e copertura. Il coach
+ritorna disponibile se non ha altri incarichi live aperti.
+
+Una richiesta di copertura reale scade dopo 15 minuti; Admin/Coordinatore
+possono annullarla e inviarne una nuova. Durante la lezione autonoma, se
+l'offerta resta senza risposta e scade o viene annullata, l'app prepara una
+nuova richiesta con una chiamata aggiornata. Non riprende automaticamente
+assalti già accettati, coperti o conclusi. Il coach può così riprendere la
+lezione dopo una pausa senza intervento dell'amministratore.
 
 Quando il coach è fisicamente con un atleta, **My Group** mostra subito il
 nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **Won / Lost**
@@ -101,12 +121,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.4.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.5.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.4.zip
+unzip -o CompCoach_Live_v0.10.5.zip
 cd compcoach_live
 bash launch.sh
 ```

@@ -132,7 +132,7 @@ def _render_persistent_guide(stage: int, stage_count: int, title: str, instructi
     scroll within the guide if a custom instruction is unusually long.
     """
     paused_label = " · Paused" if paused else ""
-    st.markdown(
+    st.html(
         f"""<style>
         .stApp:has(.cc-practice-guide) {{ --cc-guide-height: 100px; }}
         .stApp:has(.cc-practice-guide) .block-container {{
@@ -169,7 +169,6 @@ def _render_persistent_guide(stage: int, stage_count: int, title: str, instructi
           </div>
           <div class="cc-practice-guide-action">{escape(instruction)}</div>
         </div>""",
-        unsafe_allow_html=True,
     )
 
 
@@ -330,4 +329,4 @@ def render_training_panel(
                     if int(participant.get("completed_runs") or 0):
                         st.caption(f"Completed practice runs: {int(participant['completed_runs'])}")
                     if viewed:
-                        st.caption(f"Opened: {viewed}")
+                        st.caption(f"Opened: {viewed.replace('Live', 'Team situation')}")

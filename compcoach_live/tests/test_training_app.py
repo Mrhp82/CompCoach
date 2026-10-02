@@ -131,7 +131,7 @@ def test_coach_link_accepts_names_and_starts_separate_resumable_courses(database
     alex_run = query(alex, "event")
     assert alex_run != hub["id"]
     assert query(alex, "who") == "Alex"
-    assert nav(alex, "coach_nav_").options == ["My Group", "Live"]
+    assert nav(alex, "coach_nav_").options == ["My Group", "Team situation"]
     assert not any("training_end_" in str(item.key) for item in alex.button)
 
     robin = enter_practice(open_board(hub), "Robin")
@@ -148,7 +148,7 @@ def test_coach_link_accepts_names_and_starts_separate_resumable_courses(database
     reopened = open_board(database.get_meet(alex_run), who="Alex")
     assert not reopened.exception
     assert query(reopened, "event") == alex_run
-    assert nav(reopened, "coach_nav_").options == ["My Group", "Live"]
+    assert nav(reopened, "coach_nav_").options == ["My Group", "Team situation"]
 
 
 def test_ordinary_coach_screen_keeps_training_management_private(database):
@@ -156,7 +156,7 @@ def test_ordinary_coach_screen_keeps_training_management_private(database):
     training_hub(database, day)
     app = open_board(day, who="Robin")
     assert not app.exception
-    assert nav(app, "coach_nav_").options == ["My Group", "Live"]
+    assert nav(app, "coach_nav_").options == ["My Group", "Team situation"]
     assert not any("TRAINING" in item.value for item in app.warning)
     assert not any(item.label == "Activate autonomous practice" for item in app.button)
 
@@ -346,5 +346,5 @@ def test_completed_coach_can_repeat_without_resetting_other_coach(database):
     assert own["status"] == "running"
     assert own["learner"] == "Alex"
     assert own["stage_index"] < 2
-    assert nav(app, "coach_nav_").options == ["My Group", "Live"]
+    assert nav(app, "coach_nav_").options == ["My Group", "Team situation"]
     assert get_training(database, robin["id"]) == robin_before

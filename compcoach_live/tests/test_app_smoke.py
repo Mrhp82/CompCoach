@@ -104,7 +104,7 @@ def test_landing_creates_competition_then_requires_identity(tmp_path, monkeypatc
     assert query_value(app, "who") == "Carmine"
     assert nav_named(app, "admin_nav_").options == [
         "My Group",
-        "Live",
+        "Team situation",
         "Setup",
         "Share",
     ]
@@ -115,9 +115,9 @@ def test_landing_creates_competition_then_requires_identity(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     "role,actor,expected_nav",
     [
-        ("admin", "Carmine", ["My Group", "Live", "Setup", "Share"]),
-        ("coach", "Sam", ["My Group", "Live"]),
-        ("coordinator", "Irina", ["Live", "Activity"]),
+        ("admin", "Carmine", ["My Group", "Team situation", "Setup", "Share"]),
+        ("coach", "Sam", ["My Group", "Team situation"]),
+        ("coordinator", "Irina", ["Team situation", "Activity"]),
     ],
 )
 def test_unified_live_retains_shared_features_with_one_operational_athlete_list(

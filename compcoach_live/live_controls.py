@@ -97,6 +97,57 @@ def _elapsed(value: str | None) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m ago"
 
 
+def _arrive_at_pool_snapshot(db: Any, event_id: str, athlete_id: str,
+                             actor: str, version: int, location: str,
+                             coach_version: int) -> None:
+    """Confirm physical arrival without changing the ordinary pool plan."""
+    try:
+        db.cover_athlete(
+            event_id, athlete_id, actor, actor, location=location,
+            expected_version=version, expected_coach_version=coach_version,
+        )
+    except (CompCoachError, TypeError, ValueError) as exc:
+        _notice(False, str(exc))
+    else:
+        detail = location or "actual strip to confirm"
+        _notice(True, f"You are with this athlete · {detail}.")
+
+
+def render_pool_takeover_arrival(
+    db: Any, event: dict, role: str, actor: str, athlete: dict, *,
+    key_prefix: str, coach_states: list[dict] | None = None,
+) -> None:
+    """The accepted emergency coach confirms arrival with one pool action."""
+    if (
+        athlete.get("phase") != "pools"
+        or athlete.get("active_state") != "active"
+        or athlete.get("participation_status", "active") != "active"
+        or athlete.get("pool_result_at")
+        or (athlete.get("pool_wins") is not None and athlete.get("pool_losses") is not None)
+        or not actor or athlete.get("takeover_coach") != actor
+        or athlete.get("covered_by")
+    ):
+        return
+    meet = db.get_meet_for_event(str(event["id"])) or event
+    if (
+        event.get("status") != "open" or meet.get("status") != "open"
+        or meet.get("day_status", "active") != "active" or meet.get("ended_at")
+    ):
+        return
+    states = coach_states if coach_states is not None else db.list_coach_availability(meet["id"])
+    own_state = next((row for row in states if row["coach_name"] == actor), {})
+    location = str(athlete.get("live_location") or athlete.get("source_strip") or "").strip().upper()
+    if not location:
+        st.caption("Strip not known yet; confirm your arrival and update the location when you know it.")
+    st.button(
+        f"I’m with {athlete['name']}",
+        key=f"{key_prefix}_pool_arrive_{athlete['id']}", width="stretch",
+        on_click=_arrive_at_pool_snapshot,
+        args=(db, str(event["id"]), str(athlete["id"]), actor,
+              int(athlete["version"]), location, int(own_state.get("version") or 0)),
+    )
+
+
 def render_live_controls(db: Any, event: dict, role: str, actor: str,
                          athlete: dict, *, key_prefix: str,
                          coach_states: list[dict] | None = None,

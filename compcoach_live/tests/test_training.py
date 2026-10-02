@@ -94,6 +94,9 @@ def first_half(db, run, clock, *, outcome="won"):
     assert target(db,run,"secondary_id")["help_acknowledged_by"]
     db.mark_result(secondary["event_id"],secondary["id"],outcome=outcome,actor=coach)
     step(db,run,12)
+    offer = next(request for request in db.list_coverage_requests(run["id"],coach)
+                 if request["id"] == training.get_training(db,run["id"])["state"]["coverage_request_id"])
+    db.accept_coverage_request(run["id"],offer["id"],coach,actor=coach)
 
 
 @pytest.mark.parametrize("variant,outcome", [(0,"won"),(1,"lost"),(2,"won")])
@@ -111,7 +114,8 @@ def test_full_course_without_admin_or_other_real_coach(db,clock,variant,outcome)
     first_half(db,run,clock,outcome=outcome)
     coach = training.get_training(db,run["id"])["learner"]
     reassigned = target(db,run,"reassigned_id")
-    assert coach in reassigned["de_coaches"]
+    assert coach not in reassigned["de_coaches"]  # Temporary coverage does not change the pod plan.
+    assert reassigned["takeover_coach"] == coach
     assert reassigned["live_location"] == "E2"
     db.cover_athlete(reassigned["event_id"],reassigned["id"],coach,coach,location="E2")
     db.mark_result(reassigned["event_id"],reassigned["id"],outcome="won",actor=coach)

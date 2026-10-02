@@ -19,7 +19,7 @@ import secrets
 import sqlite3
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -430,6 +430,39 @@ class CompCoachDB:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_notices_current
                     ON assignment_notices(athlete_id, coach_key)
                     WHERE superseded_at IS NULL;
+
+                CREATE TABLE IF NOT EXISTS coverage_requests (
+                    id TEXT PRIMARY KEY,
+                    meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+                    phase TEXT NOT NULL CHECK (phase IN ('pools', 'de')),
+                    athlete_version INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'accepted', 'cancelled', 'expired', 'superseded')),
+                    created_at TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    accepted_at TEXT,
+                    accepted_by TEXT NOT NULL DEFAULT '',
+                    closed_at TEXT,
+                    closed_by TEXT NOT NULL DEFAULT '',
+                    close_reason TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_coverage_requests_meet_status
+                    ON coverage_requests(meet_id, status, expires_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_coverage_requests_pending_athlete
+                    ON coverage_requests(athlete_id) WHERE status = 'pending';
+                CREATE TABLE IF NOT EXISTS coverage_request_recipients (
+                    request_id TEXT NOT NULL REFERENCES coverage_requests(id) ON DELETE CASCADE,
+                    coach_name TEXT NOT NULL,
+                    coach_key TEXT NOT NULL,
+                    availability_version INTEGER NOT NULL,
+                    PRIMARY KEY(request_id, coach_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_coverage_recipients_coach
+                    ON coverage_request_recipients(coach_key, request_id);
 
                 CREATE TABLE IF NOT EXISTS coaches (
                     id TEXT PRIMARY KEY,
@@ -1393,18 +1426,20 @@ class CompCoachDB:
         cls._sync_athlete_assignment_notices(
             conn, current=current, new=new, actor=actor, source=source,
         )
+        cls._sync_coverage_request_lifecycle(
+            conn, current=current, new=new, actor=actor, source=source,
+        )
 
     @classmethod
     def _sync_athlete_assignment_notices(
         cls, conn: sqlite3.Connection, *, current: Mapping[str, Any] | None,
         new: Mapping[str, Any], actor: str, source: str,
     ) -> None:
-        """Maintain one receipt per added planned coach inside the assignment write.
+        """Retire old implicit receipts without creating new plan notifications.
 
-        Moving a coach from main to side does not add an athlete to their group.
-        Removal/reassignment and a new phase do create a fresh receipt. Calls,
-        physical coverage and repeated imports preserve the existing receipt.
-        Legacy records are not retroactively announced on server restart.
+        Planned Pools/pod assignments are implicit. The old receipt table is
+        kept as audit data; only explicit single-bout coverage requests alert
+        coaches. Existing records still close when their assignment ends.
         """
 
         if source == "legacy_snapshot":
@@ -1423,34 +1458,43 @@ class CompCoachDB:
             (new["id"],),
         ).fetchall()
         now = utc_now()
-        retained: set[str] = set()
         for row in rows:
             key = str(row["coach_key"])
             if new_actionable and not phase_changed and key in new_names:
-                retained.add(key)
                 continue
             conn.execute(
                 "UPDATE assignment_notices SET superseded_at = ?, superseded_by = ?, "
                 "version = version + 1 WHERE id = ? AND superseded_at IS NULL",
                 (now, actor or "System", row["id"]),
             )
-        if not new_actionable:
+
+    @staticmethod
+    def _sync_coverage_request_lifecycle(
+        conn: sqlite3.Connection, *, current: Mapping[str, Any] | None,
+        new: Mapping[str, Any], actor: str, source: str,
+    ) -> None:
+        """Close a single-bout offer when that bout no longer needs a volunteer."""
+        if not current or source == "legacy_snapshot":
             return
-        # Unchanged coaches in a pre-notification database remain silent.
-        added_keys = set(new_names) - (set(old_names) if old_actionable and not phase_changed else set())
-        if not added_keys:
+        invalid = (
+            not assignment_is_actionable(new)
+            or current.get("phase") != new.get("phase")
+            or bool(new.get("covered_by"))
+            or bool(new.get("takeover_coach"))
+            or source in {"won", "lost", "bye", "out", "pool_result", "de_bout_result", "de_import_not_advanced"}
+            or (new.get("phase") == "de" and any(
+                current.get(field) != new.get(field) for field in DE_RESULT_FIELDS
+            ))
+        )
+        if not invalid:
             return
-        meet = cls._meet_for_event(conn, str(new["event_id"]))
-        for key, name in new_names.items():
-            if key not in added_keys or key in retained:
-                continue
-            conn.execute(
-                "INSERT INTO assignment_notices (id, meet_id, event_id, athlete_id, "
-                "coach_name, coach_key, phase, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (uuid4().hex, meet["id"], new["event_id"], new["id"], name, key,
-                 new["phase"], now, actor or "System"),
-            )
+        now = utc_now()
+        conn.execute(
+            "UPDATE coverage_requests SET status = 'superseded', closed_at = ?, "
+            "closed_by = ?, close_reason = ?, version = version + 1 "
+            "WHERE athlete_id = ? AND status = 'pending'",
+            (now, actor or "System", source, new["id"]),
+        )
 
     @staticmethod
     def _assert_training_access(conn: sqlite3.Connection, meet_id: str) -> None:
@@ -2417,6 +2461,16 @@ class CompCoachDB:
              )),
             ("assignment_notice", "assignment_notices AS record JOIN target "
              "ON target.id = record.meet_id", ("id", "version")),
+            ("coverage_request", "coverage_requests AS record JOIN target "
+             "ON target.id = record.meet_id CROSS JOIN clock", (
+                 "id", "version", "accepted_by",
+                 "CASE WHEN record.status = 'pending' AND record.expires_at <= clock.now "
+                 "THEN 'expired' ELSE record.status END",
+             )),
+            ("coverage_recipient", "coverage_request_recipients AS record "
+             "JOIN coverage_requests AS request ON request.id = record.request_id "
+             "JOIN target ON target.id = request.meet_id",
+             ("request_id", "coach_key", "availability_version")),
             ("presence", "day_coach_presence AS record JOIN target "
              "ON target.id = record.meet_id", (
                  "coach_id", "presence_status", "home_event_id", "updated_at", "updated_by",
@@ -2441,11 +2495,11 @@ class CompCoachDB:
                 expressions.append(f"{value} AS field_{index}")
             selections.append("SELECT " + ", ".join(expressions) + " FROM " + scope)
         sql = (
-            "WITH target AS (SELECT * FROM meets WHERE id = ?) "
+            "WITH target AS (SELECT * FROM meets WHERE id = ?), clock AS (SELECT ? AS now) "
             + " UNION ALL ".join(selections)
         )
         with self._connection() as conn:
-            rows = conn.execute(sql, (meet_id,)).fetchall()
+            rows = conn.execute(sql, (meet_id, utc_now())).fetchall()
         if not rows:
             return None
         records = [[row[column] for column in column_names] for row in rows]
@@ -4028,6 +4082,35 @@ class CompCoachDB:
             "version = version + 1 WHERE coach_key = ? AND superseded_at IS NULL",
             (new_name, _normalize_name(new_name), old_key),
         )
+        # Pending offers follow the current directory identity. Completed
+        # offer recipients/accepted_by remain historical labels in the audit.
+        pending_recipients = conn.execute(
+            "SELECT recipient.* FROM coverage_request_recipients AS recipient "
+            "JOIN coverage_requests AS request ON request.id = recipient.request_id "
+            "WHERE recipient.coach_key = ? AND request.status = 'pending'",
+            (old_key,),
+        ).fetchall()
+        new_key = _normalize_name(new_name)
+        for recipient in pending_recipients:
+            target = conn.execute(
+                "SELECT 1 FROM coverage_request_recipients WHERE request_id = ? AND coach_key = ?",
+                (recipient["request_id"], new_key),
+            ).fetchone() if new_key != old_key else None
+            if target:
+                conn.execute(
+                    "DELETE FROM coverage_request_recipients WHERE request_id = ? AND coach_key = ?",
+                    (recipient["request_id"], old_key),
+                )
+            else:
+                conn.execute(
+                    "UPDATE coverage_request_recipients SET coach_name = ?, coach_key = ? "
+                    "WHERE request_id = ? AND coach_key = ?",
+                    (new_name, new_key, recipient["request_id"], old_key),
+                )
+            conn.execute(
+                "UPDATE coverage_requests SET version = version + 1 WHERE id = ? AND status = 'pending'",
+                (recipient["request_id"],),
+            )
 
         # coach_name is part of this table's primary key.  Reinsert under the
         # new key rather than recreating availability: state, timestamps and
@@ -4392,7 +4475,14 @@ class CompCoachDB:
         self, meet_id: str, coach_name: str | None = None, *,
         pending_only: bool = True,
     ) -> list[dict[str, Any]]:
-        """Return durable receipts for current, unfinished planned assignments.
+        """Retired implicit receipts remain audit-only and never interrupt coaches."""
+        return []
+
+    def _list_legacy_assignment_notices(
+        self, meet_id: str, coach_name: str | None = None, *,
+        pending_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Read old receipt audit data; the operational UI does not use it.
 
         This read never creates notices. Current call/strip details are joined
         so a pending receipt follows a coordinator's latest field information.
@@ -4451,73 +4541,327 @@ class CompCoachDB:
         self, meet_id: str, notice_id: str, coach_name: str, *,
         actor: str | None = None,
     ) -> dict[str, Any]:
-        """Acknowledge responsibility without claiming physical bout coverage.
+        """Implicit assignment receipts were replaced by single-bout requests."""
+        raise CompCoachError("Planned assignments are implicit. Only an explicit coverage request needs acceptance.")
 
-        The receipt ID identifies this precise assignment, so an old phone
-        cannot acknowledge a removed/re-added assignment. Repeated acceptance
-        is idempotent and does not reset later explicit availability.
-        """
+    def _coverage_target(
+        self, conn: sqlite3.Connection, *, meet_id: str, event_id: str,
+        athlete_id: str, expected_version: int | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        meet = dict(self._assert_meet_open(conn, meet_id))
+        if meet["ended_at"] or meet["day_status"] != "active":
+            raise EventLockedError("Coverage requests require an active competition day.")
+        self._assert_open(conn, event_id)
+        row = conn.execute(
+            "SELECT athletes.* FROM athletes JOIN meet_events "
+            "ON meet_events.event_id = athletes.event_id "
+            "WHERE athletes.id = ? AND athletes.event_id = ? AND meet_events.meet_id = ?",
+            (athlete_id, event_id, meet_id),
+        ).fetchone()
+        if row is None:
+            raise CompCoachError("This athlete does not belong to the selected competition day.")
+        athlete = dict(row)
+        if expected_version is not None and int(athlete["version"]) != int(expected_version):
+            raise ConcurrentUpdateError("This athlete changed on another phone. Review the latest call and try again.")
+        if not assignment_is_actionable(athlete):
+            raise ConcurrentUpdateError("This athlete has finished or is no longer participating.")
+        if athlete.get("covered_by"):
+            raise ConcurrentUpdateError(f"Already covered by {athlete['covered_by']}.")
+        if athlete.get("takeover_coach"):
+            raise ConcurrentUpdateError(f"{athlete['takeover_coach']} has already taken responsibility for this athlete.")
+        return meet, athlete
 
-        coach_key = _normalize_name(coach_name)
-        clean_actor = " ".join(str(actor if actor is not None else coach_name).split())
-        if not coach_key or _normalize_name(clean_actor) != coach_key:
-            raise CompCoachError("Only the assigned coach can accept this assignment.")
+    @staticmethod
+    def _available_coverage_coach(
+        conn: sqlite3.Connection, *, meet: Mapping[str, Any], coach_name: str,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        active = {
+            _normalize_name(name): name for name in _coach_names(_load(meet["active_coaches_json"], []))
+        }
+        key = _normalize_name(coach_name)
+        if key not in active:
+            raise CompCoachError(f"{coach_name} is not an active coach for this competition.")
+        name = active[key]
+        row = conn.execute(
+            "SELECT * FROM coach_availability WHERE meet_id = ? AND coach_name = ?",
+            (meet["id"], name),
+        ).fetchone()
+        version = int(row["version"]) if row else 0
+        if expected_version is not None and version != int(expected_version):
+            raise ConcurrentUpdateError(f"{name}'s availability changed on another phone. Review the latest situation.")
+        if row is None or not row["is_available"]:
+            raise ConcurrentUpdateError(f"{name} is no longer marked available.")
+        occupied = conn.execute(
+            "SELECT athletes.name FROM athletes JOIN meet_events "
+            "ON meet_events.event_id = athletes.event_id "
+            "WHERE meet_events.meet_id = ? "
+            "AND (athletes.covered_by = ? OR athletes.takeover_coach = ?) "
+            "AND athletes.active_state = 'active' AND athletes.participation_status = 'active' LIMIT 1",
+            (meet["id"], name, name),
+        ).fetchone()
+        if occupied:
+            raise ConcurrentUpdateError(f"{name} is already covering or responsible for {occupied['name']}.")
+        return {"coach_name": name, "coach_key": key, "availability_version": version}
+
+    def _create_coverage_request(
+        self, conn: sqlite3.Connection, *, meet_id: str, event_id: str,
+        athlete_id: str, coach_names: Iterable[str], actor: str,
+        expected_version: int | None = None,
+        expected_coach_versions: Mapping[str, int] | None = None,
+        expires_in_seconds: int = 900,
+    ) -> dict[str, Any]:
+        """Create one offer inside an existing writer transaction (also training)."""
+        names = _coach_names(coach_names)
+        clean_actor = " ".join(str(actor or "").split())
+        if not names:
+            raise ValueError("Select at least one available coach.")
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        if (isinstance(expires_in_seconds, bool) or not isinstance(expires_in_seconds, int)
+                or not 1 <= expires_in_seconds <= 3600):
+            raise ValueError("Coverage request expiry must be between 1 and 3600 seconds.")
+        meet, athlete = self._coverage_target(
+            conn, meet_id=meet_id, event_id=event_id, athlete_id=athlete_id,
+            expected_version=expected_version,
+        )
+        versions = (
+            {_normalize_name(name): version for name, version in expected_coach_versions.items()}
+            if expected_coach_versions is not None else None
+        )
+        recipients = []
+        for name in names:
+            key = _normalize_name(name)
+            if versions is not None and key not in versions:
+                raise ValueError("An availability version is required for every selected coach.")
+            recipients.append(self._available_coverage_coach(
+                conn, meet=meet, coach_name=name,
+                expected_version=versions[key] if versions is not None else None,
+            ))
+        now = utc_now()
+        conn.execute(
+            "UPDATE coverage_requests SET status = 'expired', closed_at = ?, closed_by = 'System', "
+            "close_reason = 'expired', version = version + 1 "
+            "WHERE athlete_id = ? AND status = 'pending' AND expires_at <= ?",
+            (now, athlete_id, now),
+        )
+        if conn.execute(
+            "SELECT 1 FROM coverage_requests WHERE athlete_id = ? AND status = 'pending'",
+            (athlete_id,),
+        ).fetchone():
+            raise ConcurrentUpdateError("A coverage request is already pending for this athlete. Cancel it before sending another.")
+        expires = (datetime.fromisoformat(now) + timedelta(seconds=expires_in_seconds)).isoformat()
+        request_id = uuid4().hex
+        conn.execute(
+            "INSERT INTO coverage_requests (id, meet_id, event_id, athlete_id, phase, athlete_version, "
+            "created_at, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_id, meet_id, event_id, athlete_id, athlete["phase"], athlete["version"], now, clean_actor, expires),
+        )
+        conn.executemany(
+            "INSERT INTO coverage_request_recipients (request_id, coach_name, coach_key, availability_version) "
+            "VALUES (?, ?, ?, ?)",
+            [(request_id, recipient["coach_name"], recipient["coach_key"], recipient["availability_version"])
+             for recipient in recipients],
+        )
+        self._log_action(
+            conn, event_id=event_id, athlete_id=athlete_id, action="coverage_requested",
+            actor=clean_actor, previous=None,
+            new={"coverage_request_id": request_id, "name": athlete["name"],
+                 "coach_names": [recipient["coach_name"] for recipient in recipients], "expires_at": expires},
+            version_after=None,
+        )
+        request = dict(conn.execute("SELECT * FROM coverage_requests WHERE id = ?", (request_id,)).fetchone())
+        request["recipients"] = recipients
+        return request
+
+    def create_coverage_request(
+        self, meet_id: str, event_id: str, athlete_id: str,
+        coach_names: Iterable[str], actor: str, *,
+        expected_version: int | None = None,
+        expected_coach_versions: Mapping[str, int] | None = None,
+        expires_in_seconds: int = 900,
+    ) -> dict[str, Any]:
+        """Offer one uncovered bout to available coaches; sending reserves nobody."""
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            meet = self._assert_meet_open(conn, meet_id)
-            if meet["ended_at"] or meet["day_status"] != "active":
-                raise EventLockedError("This competition day is not active and cannot accept assignments.")
-            notice_row = conn.execute(
-                "SELECT * FROM assignment_notices WHERE id = ? AND meet_id = ?",
-                (notice_id, meet_id),
-            ).fetchone()
-            if notice_row is None:
-                raise ConcurrentUpdateError("This assignment is no longer available. Refresh your group.")
-            notice = dict(notice_row)
-            if notice["coach_key"] != coach_key:
-                raise CompCoachError("Only the assigned coach can accept this assignment.")
-            self._assert_open(conn, str(notice["event_id"]))
-            athlete_row = conn.execute(
-                "SELECT athletes.* FROM athletes JOIN meet_events "
-                "ON meet_events.event_id = athletes.event_id "
-                "WHERE athletes.id = ? AND athletes.event_id = ? AND meet_events.meet_id = ?",
-                (notice["athlete_id"], notice["event_id"], meet_id),
-            ).fetchone()
-            athlete = dict(athlete_row) if athlete_row else {}
-            if (notice["superseded_at"] or not athlete
-                    or notice["phase"] != athlete.get("phase")
-                    or not assignment_is_actionable(athlete)
-                    or coach_key not in {_normalize_name(name) for name in assigned_coaches(athlete)}):
-                raise ConcurrentUpdateError("This assignment changed or the athlete has finished. Refresh your group.")
-            active_names = {
-                _normalize_name(name): name for name in _coach_names(_load(meet["active_coaches_json"], []))
-            }
-            if coach_key not in active_names:
-                raise CompCoachError("You are no longer an active coach for this competition.")
-            if not notice["accepted_at"]:
-                now = utc_now()
-                conn.execute(
-                    "UPDATE assignment_notices SET accepted_at = ?, accepted_by = ?, "
-                    "version = version + 1 WHERE id = ? AND accepted_at IS NULL "
-                    "AND superseded_at IS NULL",
-                    (now, active_names[coach_key], notice_id),
-                )
-                self._clear_available_coaches(
-                    conn, meet_id, [active_names[coach_key]], active_names[coach_key],
-                )
-                notice = dict(conn.execute(
-                    "SELECT * FROM assignment_notices WHERE id = ?", (notice_id,),
-                ).fetchone())
-                self._log_action(
-                    conn, event_id=str(notice["event_id"]),
-                    athlete_id=str(notice["athlete_id"]), action="assignment_accepted",
-                    actor=active_names[coach_key], previous=None,
-                    new={"assignment_notice_id": notice_id, "coach_name": active_names[coach_key],
-                         "athlete_name": athlete["name"], "accepted_at": now},
-                    version_after=None,
-                )
+            result = self._create_coverage_request(
+                conn, meet_id=meet_id, event_id=event_id, athlete_id=athlete_id,
+                coach_names=coach_names, actor=actor, expected_version=expected_version,
+                expected_coach_versions=expected_coach_versions, expires_in_seconds=expires_in_seconds,
+            )
             conn.commit()
-        return notice
+        return result
+
+    def list_coverage_requests(
+        self, meet_id: str, coach_name: str | None = None, *, pending_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Read explicit single-bout requests, joining the latest call and location."""
+        sql = """
+            SELECT request.*, athlete.name AS athlete_name, athlete.phase AS athlete_phase,
+                athlete.version AS current_athlete_version, athlete.pod, athlete.pool_no,
+                athlete.source_strip, athlete.time_text, athlete.live_location,
+                athlete.call_status, athlete.reported_at, athlete.covered_by, athlete.covered_at,
+                athlete.takeover_coach, athlete.active_state, athlete.participation_status,
+                athlete.pool_result_at, event.name AS event_name,
+                meets.status AS meet_status, meets.ended_at AS meet_ended_at, meets.day_status,
+                event.status AS event_status, competitions.status AS competition_status
+            FROM coverage_requests AS request
+            JOIN athletes AS athlete ON athlete.id = request.athlete_id
+            JOIN events AS event ON event.id = request.event_id
+            JOIN meet_events AS membership ON membership.event_id = request.event_id
+                AND membership.meet_id = request.meet_id
+            JOIN meets ON meets.id = request.meet_id
+            LEFT JOIN competitions ON competitions.id = meets.competition_id
+            WHERE request.meet_id = ?
+        """
+        now = utc_now()
+        params: list[Any] = [meet_id]
+        if pending_only:
+            sql += " AND request.status = 'pending' AND request.expires_at > ?"
+            params.append(now)
+        if coach_name is not None:
+            sql += " AND EXISTS (SELECT 1 FROM coverage_request_recipients AS recipient "
+            sql += "WHERE recipient.request_id = request.id AND recipient.coach_key = ?)"
+            params.append(_normalize_name(coach_name))
+        sql += " ORDER BY request.created_at DESC, request.id"
+        with self._connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            recipient_rows = conn.execute(
+                "SELECT recipient.* FROM coverage_request_recipients AS recipient "
+                "JOIN coverage_requests AS request ON request.id = recipient.request_id "
+                "WHERE request.meet_id = ? ORDER BY recipient.coach_name, recipient.coach_key",
+                (meet_id,),
+            ).fetchall()
+        by_request: dict[str, list[dict[str, Any]]] = {}
+        for recipient in recipient_rows:
+            by_request.setdefault(str(recipient["request_id"]), []).append(dict(recipient))
+        result = []
+        for row in rows:
+            request = dict(row)
+            if request["status"] == "pending" and request["expires_at"] <= now:
+                request["status"] = "expired"
+            if pending_only and (
+                request["status"] != "pending" or request["meet_status"] != "open"
+                or request["event_status"] != "open" or request["competition_status"] == "closed"
+                or request["meet_ended_at"] or request["day_status"] != "active"
+                or request["phase"] != request["athlete_phase"]
+                or not assignment_is_actionable({**request, "phase": request["athlete_phase"]})
+                or request["covered_by"] or request["takeover_coach"]
+            ):
+                continue
+            request["created_athlete_version"] = request["athlete_version"]
+            request["athlete_version"] = request["current_athlete_version"]
+            request["actual_strip"] = request["live_location"]
+            request["recipients"] = by_request.get(str(request["id"]), [])
+            result.append(request)
+        return result
+
+    def accept_coverage_request(
+        self, meet_id: str, request_id: str, coach_name: str, *, actor: str | None = None,
+        expected_version: int | None = None, expected_coach_version: int | None = None,
+        expected_request_version: int | None = None,
+    ) -> dict[str, Any]:
+        """First available recipient wins responsibility; physical coverage starts later."""
+        key = _normalize_name(coach_name)
+        if not key or _normalize_name(actor if actor is not None else coach_name) != key:
+            raise CompCoachError("Only the invited coach can accept this coverage request.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = dict(self._assert_meet_open(conn, meet_id))
+            if meet["ended_at"] or meet["day_status"] != "active":
+                raise EventLockedError("Coverage requests require an active competition day.")
+            row = conn.execute(
+                "SELECT * FROM coverage_requests WHERE id = ? AND meet_id = ?", (request_id, meet_id),
+            ).fetchone()
+            if row is None:
+                raise ConcurrentUpdateError("This coverage request is no longer available.")
+            request = dict(row)
+            recipient = conn.execute(
+                "SELECT * FROM coverage_request_recipients WHERE request_id = ? AND coach_key = ?",
+                (request_id, key),
+            ).fetchone()
+            if recipient is None:
+                raise CompCoachError("You were not invited to this coverage request.")
+            if request["status"] == "accepted":
+                if _normalize_name(request["accepted_by"]) == key:
+                    conn.commit()
+                    return request
+                raise ConcurrentUpdateError(f"Already accepted by {request['accepted_by']}.")
+            if request["status"] != "pending":
+                raise ConcurrentUpdateError("This coverage request has ended. Review the latest situation.")
+            if expected_request_version is not None and int(request["version"]) != int(expected_request_version):
+                raise ConcurrentUpdateError("This coverage request changed on another phone.")
+            now = utc_now()
+            if request["expires_at"] <= now:
+                conn.execute(
+                    "UPDATE coverage_requests SET status = 'expired', closed_at = ?, closed_by = 'System', "
+                    "close_reason = 'expired', version = version + 1 WHERE id = ? AND status = 'pending'",
+                    (now, request_id),
+                )
+                conn.commit()
+                raise ConcurrentUpdateError("This coverage request has expired.")
+            _, athlete = self._coverage_target(
+                conn, meet_id=meet_id, event_id=str(request["event_id"]),
+                athlete_id=str(request["athlete_id"]), expected_version=expected_version,
+            )
+            if athlete["phase"] != request["phase"]:
+                raise ConcurrentUpdateError("The athlete's competition phase has changed.")
+            coach = self._available_coverage_coach(
+                conn, meet=meet, coach_name=coach_name, expected_version=expected_coach_version,
+            )
+            # Close the offer first so the ordinary takeover lifecycle does
+            # not supersede the request that is being accepted in this write.
+            conn.execute(
+                "UPDATE coverage_requests SET status = 'accepted', accepted_at = ?, accepted_by = ?, "
+                "closed_at = ?, closed_by = ?, close_reason = 'accepted', version = version + 1 "
+                "WHERE id = ? AND status = 'pending'",
+                (now, coach["coach_name"], now, coach["coach_name"], request_id),
+            )
+            self._update_athlete(
+                conn, event_id=str(request["event_id"]), athlete_id=str(request["athlete_id"]),
+                changes={"takeover_coach": coach["coach_name"], "takeover_at": now, "takeover_by": coach["coach_name"]},
+                action="coverage_request_accepted", actor=coach["coach_name"],
+                expected_version=int(athlete["version"]), require_active=True,
+            )
+            result = dict(conn.execute("SELECT * FROM coverage_requests WHERE id = ?", (request_id,)).fetchone())
+            conn.commit()
+        return result
+
+    def cancel_coverage_request(
+        self, meet_id: str, request_id: str, actor: str, *, expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Cancel only an unanswered offer; existing takeovers use release instead."""
+        if not str(actor or "").strip():
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_meet_open(conn, meet_id)
+            row = conn.execute(
+                "SELECT * FROM coverage_requests WHERE id = ? AND meet_id = ?", (request_id, meet_id),
+            ).fetchone()
+            if row is None:
+                raise ConcurrentUpdateError("This coverage request is no longer available.")
+            request = dict(row)
+            if request["status"] == "accepted":
+                raise ConcurrentUpdateError(f"Already accepted by {request['accepted_by']}. Release the takeover to change responsibility.")
+            if expected_version is not None and int(request["version"]) != int(expected_version):
+                raise ConcurrentUpdateError("This coverage request changed on another phone.")
+            if request["status"] == "pending":
+                now = utc_now()
+                status = "expired" if request["expires_at"] <= now else "cancelled"
+                conn.execute(
+                    "UPDATE coverage_requests SET status = ?, closed_at = ?, closed_by = ?, "
+                    "close_reason = ?, version = version + 1 WHERE id = ? AND status = 'pending'",
+                    (status, now, actor, status, request_id),
+                )
+                self._log_action(
+                    conn, event_id=str(request["event_id"]), athlete_id=str(request["athlete_id"]),
+                    action="coverage_request_cancelled", actor=actor, previous=None,
+                    new={"coverage_request_id": request_id, "status": status}, version_after=None,
+                )
+            result = dict(conn.execute("SELECT * FROM coverage_requests WHERE id = ?", (request_id,)).fetchone())
+            conn.commit()
+        return result
 
     def list_assignment_history(
         self,
@@ -5966,14 +6310,27 @@ class CompCoachDB:
                     "pool_losses": losses,
                     "pool_result_at": utc_now(),
                     "pool_result_by": actor,
+                    "covered_by": "",
+                    "covered_at": None,
+                    "call_status": "waiting",
+                    "live_location": "",
+                    "reported_at": None,
+                    "reported_by": "",
+                    "help_requested_by": "",
+                    "help_requested_at": None,
+                    "help_location": "",
+                    "help_acknowledged_by": "",
+                    "help_acknowledged_at": None,
                 },
                 action="pool_result",
                 actor=actor,
                 expected_version=expected_version,
             )
-            if current["takeover_coach"]:
+            if current["covered_by"] or current["takeover_coach"]:
                 meet = self._meet_for_event(conn, event_id)
-                self._mark_released_coaches_available(conn, meet["id"], [current["takeover_coach"]], actor)
+                self._mark_released_coaches_available(
+                    conn, meet["id"], [current["covered_by"], current["takeover_coach"]], actor,
+                )
             conn.commit()
         return result
 

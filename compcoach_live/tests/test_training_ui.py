@@ -109,6 +109,7 @@ def _button(app, label):
 def _text(app):
     return "\n".join([
         *(item.value for item in app.markdown),
+        *(getattr(item.proto, "body", "") for item in app.get("html")),
         *(item.value for item in app.caption),
         *(item.value for item in app.info),
         *(item.value for item in app.success),

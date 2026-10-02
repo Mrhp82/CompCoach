@@ -29,20 +29,20 @@ SYSTEM_ACTOR = "Training simulation"
 DEFAULT_COACHES = ["Coach Alex", "Coach Taylor", "Coach Morgan"]
 TRAINING_STEPS = [
     {"title": "Your identity and My Group", "instruction": "Open My Group. Check your event, athletes and planned pool strips.", "hint": "You have your own complete exercise. Other coaches can join later without changing your progress."},
-    {"title": "Pool assignments and start signal", "instruction": "Open Live and check All assignments. The virtual coordinator has assigned your group and started Pools: the signal is green.", "hint": "My Group is your own work list; Live is the shared situation, coach availability and assignments."},
+    {"title": "Pool assignments and start signal", "instruction": "Open Team situation and check All assignments. The virtual coordinator has assigned your group and started Pools: the signal is green.", "hint": "My Group is your own work list; Team situation shows the shared situation, coach availability and assignments."},
     {"title": "Respond to shared help", "instruction": "A virtual colleague reports a pool emergency: an athlete has missed several bouts without coaching. Tap I’m coming on the shared request.", "hint": "During pools, everyone is busy. Request help only for a real emergency, such as several missed bouts or an athlete left without coaching who feels abandoned. Check location and elapsed time; acknowledging help is not physical coverage."},
     {"title": "Complete pool results", "instruction": "Record wins and losses for one athlete, for example 3 / 3. You can also practice marking an athlete absent.", "hint": "Completed athletes collapse below your current work. The other fictional pools finish after your result."},
     {"title": "Tell the team you are available", "instruction": "Your pools are finished. Tap I’m available to help and check the shared available-coach banner.", "hint": "Free coaches can be reassigned across events. The virtual coordinator will prepare your next assignment."},
-    {"title": "Direct Elimination pod plan", "instruction": "Open Live to inspect the new DE pod assignments and green DE signal. Then return to My Group.", "hint": "DE coaches are equal. A pod reference such as A1 identifies the calling pod, not the actual bout strip."},
+    {"title": "Direct Elimination pod plan", "instruction": "Open Team situation to inspect the new DE pod assignments and green DE signal. Then return to My Group.", "hint": "DE coaches are equal. A pod reference such as A1 identifies the calling pod, not the actual bout strip."},
     {"title": "Call without a confirmed strip", "instruction": "A parent reports {primary_name} On deck. Save On deck or In the hole while leaving Actual bout strip empty.", "hint": "The call saves with Actual strip to confirm and its timestamp. Do not invent a strip from the pod."},
     {"title": "Actual strip and physical coverage", "instruction": "{primary_name} is now called on C3. Add the actual strip and tap I’m with {primary_name}.", "hint": "Coverage starts your busy timer and removes you from Available. Your other called athletes may need another coach."},
     {"title": "Busy coach: a colleague may help", "instruction": "You are with {primary_name}. Watch the alternate-coverage notice for {secondary_name}; a virtual colleague may respond after a short delay. When your bout finishes, record Won or Lost for {primary_name}.", "hint": "Some replays include a colleague who covers the other athlete; some leave the alert unresolved. Request help when needed. Your result releases you."},
     {"title": "A sudden call: take over", "instruction": "You are free. A new Now, On deck or In the hole call will appear for {secondary_name}, whose assigned coach is busy. Tap I’ll take over.", "hint": "A takeover immediately reserves you, even before physical coverage. Your name disappears from Available."},
     {"title": "Cover the athlete and request help", "instruction": "Add actual strip J2 for {secondary_name}, start physical coverage, and tap 🚨 Need help now. A virtual colleague will respond.", "hint": "Requests are global and include an elapsed timer. The coordinator can update calls, strips and covering coaches."},
     {"title": "One-tap DE result", "instruction": "Record Won or Lost for {secondary_name}. Check the wheel, Out list and your availability.", "hint": "A winner moves to the end of the wheel. A loss moves Out. Calls and coverage clear; no bout scores are required."},
-    {"title": "The only free coach is reassigned", "instruction": "You were the only free coach: the virtual coordinator assigned {reassigned_name} to you, On deck on E2. Confirm your new assignment, open My Group, cover this athlete, then record Won or Lost.", "hint": "A new assignment stays visible until you confirm it. Assignments may cross events. Check the new athlete in your own group before heading to the actual strip."},
+    {"title": "An urgent request to available coaches", "instruction": "The virtual coordinator needs coverage for {reassigned_name}, On deck on E2. Tap I'll cover this bout on the request, open My Group, record your physical arrival, then tap Won or Lost.", "hint": "The request is offered to available coaches. The first acceptance takes this bout and closes the offer for everyone else. It does not change pod assignments or start a physical-coverage timer. Tap I’m with the athlete when you arrive."},
     {"title": "Record a bye", "instruction": "Record a Bye for {bye_name} and check the number of rounds passed.", "hint": "A bye advances the athlete without inventing a win. Mistakes can be corrected in Correct DE results."},
-    {"title": "Mark a same-club bout", "instruction": "In Live → AFM vs AFM, mark {pair_a_name} and {pair_b_name} as opponents in this practice round.", "hint": "Without a bracket, the app cannot infer the pairing. Any coach who notices it can mark it."},
+    {"title": "Mark a same-club bout", "instruction": "In Team situation → AFM vs AFM, mark {pair_a_name} and {pair_b_name} as opponents in this practice round.", "hint": "Without a bracket, the app cannot infer the pairing. Any coach who notices it can mark it."},
     {"title": "Resolve both athletes together", "instruction": "Record the winner of the paired AFM bout. Check that the opponent becomes Out and the winner moves to the end of the wheel.", "hint": "The result updates both athletes together. Dedicated correction controls restore mistakes safely."},
     {"title": "Next actual strip and final bout", "instruction": "{final_name} is fencing now on D4. Cover this new call, then record one final Won or Lost result.", "hint": "The next strip can differ from the previous strip and the calling pod. The exercise closes the fictional day after your result."},
     {"title": "Exercise complete", "instruction": "Review your completed skills and the final board. You may start Practice again while the exercise link remains active.", "hint": "Your real competition data was never changed. Each replay can create a different coverage response or sudden call."},
@@ -52,20 +52,20 @@ TRAINING_STEPS = [
 # stays available in the hint panel without making the guide cover the board.
 _GUIDE_ACTIONS = (
     "Open My Group. Check your athletes and pool strips.",
-    "Open Live → All assignments. Check strips and the green Pools signal.",
+    "Open Team situation → All assignments. Check strips and the green Pools signal.",
     "A pool emergency needs help. Tap I’m coming on the shared request.",
     "Record one athlete’s pool wins and losses in My Group, for example 3 / 3.",
     "Tap I’m available to help.",
-    "Open Live to check your DE pod plan. Then return to My Group.",
+    "Open Team situation to check your DE pod plan. Then return to My Group.",
     "Save On deck or In the hole for {primary_name}, without an actual strip.",
     "Set {primary_name}’s actual strip to C3, then tap I’m with {primary_name}.",
     "You are with {primary_name}. When the bout finishes, tap Won or Lost.",
     "When {secondary_name}’s sudden call appears, tap I’ll take over.",
     "Set {secondary_name} to J2, start physical coverage, then tap Need help now.",
     "Tap Won or Lost for {secondary_name}. Check your availability.",
-    "Confirm your new assignment, cover {reassigned_name} on E2, then tap Won or Lost.",
+    "Tap I'll cover this bout for {reassigned_name}, cover them on E2, then tap Won or Lost.",
     "Record a Bye for {bye_name}.",
-    "Open Live → AFM vs AFM. Mark {pair_a_name} and {pair_b_name} as opponents.",
+    "Open Team situation → AFM vs AFM. Mark {pair_a_name} and {pair_b_name} as opponents.",
     "Record the winner of the paired AFM bout.",
     "Cover {final_name}’s new call on D4, then tap Won or Lost.",
     "Review your completed skills. You may choose Practice again.",
@@ -79,6 +79,7 @@ _MILESTONES = {
     "help_acknowledged": "Help acknowledged", "live_update": "Call reported",
     "coverage_start": "Physical coverage", "claim": "Physical coverage",
     "takeover": "Takeover", "won": "DE result", "lost": "DE result",
+    "coverage_request_accepted": "Urgent coverage accepted",
     "bye": "Bye", "de_bout_create": "AFM pairing",
     "de_bout_result": "AFM result", "de_bout_resolve": "AFM result", "de_result_correction": "Result correction",
 }
@@ -511,10 +512,97 @@ def _virtual_cover(db: Any, conn: Any, athlete: dict, coach: str, strip: str) ->
                          action="coverage_start",expected_version=athlete["version"])
 
 
+def _practice_request_recipients(db: Any, conn: Any, meet_id: str, state: dict, *, prepare: bool = False) -> list[str]:
+    """Prepare a free virtual colleague, then use only currently available staff."""
+    if prepare:
+        virtual = state["coaches"][1]
+        for athlete in _athletes(conn,meet_id):
+            if not _eligible(athlete):
+                continue
+            changes = {}
+            if athlete.get("covered_by") == virtual:
+                changes.update(covered_by="", covered_at=None)
+            if athlete.get("takeover_coach") == virtual:
+                changes.update(takeover_coach="", takeover_at=None, takeover_by="")
+            if changes:
+                _update(db,conn,athlete,changes,"coverage_release")
+        db._mark_released_coaches_available(conn,meet_id,[state["learner"],virtual],SYSTEM_ACTOR)
+    athletes = _athletes(conn,meet_id)
+    available = {str(row["coach_name"]) for row in conn.execute(
+        "SELECT coach_name FROM coach_availability WHERE meet_id = ? AND is_available = 1",(meet_id,),
+    ).fetchall()}
+    recipients = [coach for coach in state["coaches"] if coach in available and not any(
+        _eligible(athlete) and coach in {athlete.get("covered_by"),athlete.get("takeover_coach")}
+        for athlete in athletes
+    )]
+    return recipients if state["learner"] in recipients else []
+
+
+def _practice_request_timer(request: dict) -> dict:
+    return {"id":uuid4().hex,"kind":"renew_coverage_request","due_at":request["expires_at"],
+            "athlete_id":request["athlete_id"],"request_id":request["id"]}
+
+
+def _send_practice_coverage_request(db: Any, conn: Any, row: dict, state: dict, athlete: dict,
+                                  recipients: list[str]) -> dict:
+    athlete = _update(db,conn,athlete,{"call_status":"on_deck","live_location":"E2", "de_awaiting_next":0,
+                      "reported_at":utc_now(),"reported_by":SYSTEM_ACTOR},"live_update")
+    request = db._create_coverage_request(
+        conn,meet_id=row["meet_id"],event_id=athlete["event_id"],athlete_id=athlete["id"],
+        coach_names=recipients,actor=SYSTEM_ACTOR,expected_version=athlete["version"],
+    )
+    state.update(reassigned_id=athlete["id"],reassigned_name=athlete["name"],coverage_request_id=request["id"])
+    state["scenario_message"] = (
+        f"Virtual coordinator: {athlete['name']} needs coverage · On deck · E2. "
+        f"The offer is sent to {', '.join(recipients)}. The first acceptance takes this bout; the pod plan stays unchanged."
+    )
+    return _practice_request_timer(request)
+
+
+def _renew_practice_coverage_request(db: Any, conn: Any, row: dict, state: dict, athlete: dict | None) -> dict | None:
+    """Restore an unanswered lesson offer after expiry without reclaiming a bout."""
+    if int(row["stage"]) != 12 or not athlete or not _eligible(athlete):
+        return None
+    if athlete.get("covered_by") or athlete.get("takeover_coach"):
+        return None
+    if any(action["athlete_id"] == athlete["id"] and action["action"] in {"won","lost"}
+           for action in _actions(conn,row["meet_id"],int(state.get("entered_action_id",0)))):
+        return None
+    raw = conn.execute("SELECT * FROM coverage_requests WHERE id = ?",(state.get("coverage_request_id"),)).fetchone()
+    request = dict(raw) if raw else None
+    if request and request["status"] == "accepted":
+        return None
+    now = utc_now()
+    if request and request["status"] == "pending" and request["expires_at"] > now:
+        return _practice_request_timer(request)
+    if request and request["status"] == "pending":
+        conn.execute(
+            "UPDATE coverage_requests SET status = 'expired', closed_at = ?, closed_by = ?, "
+            "close_reason = 'expired', version = version + 1 WHERE id = ? AND status = 'pending' AND expires_at <= ?",
+            (now,SYSTEM_ACTOR,request["id"],now),
+        )
+    recipients = _practice_request_recipients(db,conn,row["meet_id"],state)
+    if recipients:
+        return _send_practice_coverage_request(db,conn,row,state,athlete,recipients)
+    return {"id":uuid4().hex,"kind":"renew_coverage_request","due_at":
+            (datetime.fromisoformat(now)+timedelta(seconds=15)).isoformat(),"athlete_id":athlete["id"]}
+
+
 def _process_pending(db: Any, conn: Any, row: dict, state: dict) -> None:
     now = datetime.fromisoformat(utc_now())
     retained = []
     for event in state.get("pending_events",[]):
+        if event["kind"] == "renew_coverage_request":
+            request = conn.execute("SELECT status, expires_at FROM coverage_requests WHERE id = ?",
+                                   (state.get("coverage_request_id"),)).fetchone()
+            if request and request["status"] == "pending" and datetime.fromisoformat(request["expires_at"]) > now:
+                retained.append({**event,"due_at":request["expires_at"]})
+            else:
+                athlete = _target(_athletes(conn,row["meet_id"]),state,"reassigned_id")
+                renewal = _renew_practice_coverage_request(db,conn,row,state,athlete)
+                if renewal:
+                    retained.append(renewal)
+            continue
         if datetime.fromisoformat(event["due_at"]) > now:
             retained.append(event)
             continue
@@ -549,11 +637,13 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
     meet_id = row["meet_id"]
     state.pop("instruction_override",None)
     state.pop("guide_instruction_override",None)
+    if stage != 12:
+        state["pending_events"] = [event for event in state.get("pending_events",[]) if event["kind"] != "renew_coverage_request"]
     state["scenario_message"] = ""
     athletes = _athletes(conn,meet_id)
     if stage == 1:
         _phase(conn,meet_id,"pools")
-        state["scenario_message"] = "The virtual coordinator has assigned the pool groups and changed the Pools signal to green. Open Live to inspect the common board."
+        state["scenario_message"] = "The virtual coordinator has assigned the pool groups and changed the Pools signal to green. Open Team situation to inspect the common board."
     elif stage == 2:
         _choose_targets(athletes,state)
         primary = _target(athletes,state,"primary_id")
@@ -617,16 +707,17 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
         state["scenario_message"] = "Your alert is shared with the virtual team. Record the result when this bout finishes."
     elif stage == 12:
         _clear_help(db,conn,athletes)
+        recipients = _practice_request_recipients(db,conn,meet_id,state,prepare=True)
         candidates = [a for a in _athletes(conn,meet_id) if a["phase"] == "de" and _eligible(a) and not a["covered_by"] and not a["takeover_coach"]]
         if candidates:
             newly_assigned = [a for a in candidates if state["learner"] not in assigned_coaches(a)]
             primary = _target(athletes,state,"primary_id")
             cross_event = [a for a in newly_assigned if primary and a["event_id"] != primary["event_id"]]
-            athlete = _assign_to_learner(db,conn,(cross_event or newly_assigned or candidates)[0],state)
-            athlete = _update(db,conn,athlete,{"call_status":"on_deck","live_location":"E2","de_awaiting_next":0,"reported_at":utc_now(),"reported_by":SYSTEM_ACTOR},"live_update")
-            db._clear_available_coaches(conn,meet_id,[state["learner"]],SYSTEM_ACTOR)
-            state.update(reassigned_id=athlete["id"],reassigned_name=athlete["name"])
-            state["scenario_message"] = f"Virtual coordinator: you were the only free coach, so I assigned {athlete['name']} to you · On deck · E2. The new athlete is in your My Group list."
+            athlete = (cross_event or newly_assigned or candidates)[0]
+            if recipients:
+                state.setdefault("pending_events",[]).append(
+                    _send_practice_coverage_request(db,conn,row,state,athlete,recipients)
+                )
     elif stage == 13:
         candidates = [a for a in athletes if a["phase"] == "de" and _eligible(a) and not a["covered_by"] and not a["takeover_coach"]]
         if candidates:

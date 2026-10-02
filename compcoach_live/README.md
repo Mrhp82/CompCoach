@@ -11,9 +11,22 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.10.4
+## Included in v0.10.5
+
+### New in v0.10.5
+
+- The practice guide now uses native HTML rendering, so it displays as a compact fixed bar instead of showing HTML text. Its next action remains visible while scrolling; the full explanation stays in **Need a hint?**.
+- The shared operational page is labelled **Team situation**. Existing links and saved navigation still work; the CompCoach Live application name is unchanged.
+- Ordinary Pool groups and DE pod assignments are implicit: coaches see them in **My Group** without accepting each athlete. Automatic assignment notices from v0.10.4 are retired from the interface; stored assignments, results and historical notice records are retained.
+- Admin and Coordinator can use **Request coverage for a bout → Request coverage** for an unexpected bout needing help, selecting one or more currently available coaches. Sending an offer does not reserve anyone or change the Pool/DE pod plan.
+- The first coach to tap **I'll cover this bout** takes temporary responsibility for that bout. The offer closes for every other recipient; the accepting coach leaves Available, while the other coaches remain free. The athlete appears in that coach's **My Group** without changing the planned coaches.
+- Acceptance and arrival are separate. **I’m with [athlete]** records physical presence and starts the busy timer, including for an accepted Pool emergency. Finishing the Pool result clears its call, help, takeover and coverage, and releases the coach when no other live duty remains.
+- Real coverage offers expire after **15 minutes**. Admin/Coordinator can cancel an unanswered offer and send a new one if circumstances change. In autonomous practice, an unanswered expired or cancelled lesson offer is renewed as a fresh request; accepted or already covered bouts are never reclaimed automatically.
 
 ### New in v0.10.4
+
+Historical release notes: the automatic assignment-acceptance notices described
+below were replaced by explicit single-bout coverage requests in v0.10.5.
 
 - **My Group** puts the athlete you are physically covering directly beneath its heading, with actual strip, busy timer and immediate **Won / Lost** commands for DE. Finishing the bout releases your coverage; detailed controls remain in **Current bout details**.
 - The personal DE list brings accepted takeovers and fresh **Now → On deck → In the hole** calls ahead of the waiting wheel. Old calls have a separate **Calls to verify** section; athletes already covered appear below current work. Uncalled winners still rotate to the end after each result.
@@ -243,25 +256,28 @@ the multi-phone checks in the deployment guide.
   every athlete assigned as Main, Side, or equal DE coach plus athletes the
   person is currently covering. The coach's event is highlighted and temporary
   cross-event coverage remains visible.
-- A mobile-first `Situation` page with three compact views: `Now`,
-  `Assignments`, and `Pool Results`. `Assignments` retains the read-only Team
-  Plan grouped by event, phase, and coach, so everyone can see the complete
-  staff plan without opening the Admin tools.
+- **Team situation** combines live athlete operations with collapsed sections
+  for Coaches, DE sector load, All assignments and Pool results. The read-only
+  Team Plan is grouped by event, phase and coach, so everyone can see the staff
+  plan without opening Admin tools.
 - Meet-wide manual coach availability. A coach can tap `I'm available to help`
   after finishing their current duties, see how long the status has been
   active, and remove it at any time. The app shows an extra confirmation when
-  its data still indicates unfinished work; availability is never inferred
-  automatically and does not mean that the coach is online.
-- The `Now` situation view shows every active Direct Elimination athlete by
+  its data still indicates unfinished work. Finishing or releasing a bout can
+  restore availability when no other live responsibility remains; availability
+  does not mean that the coach is online.
+- **Team situation** shows every active Direct Elimination athlete by
   event and sector/pod, including all equal DE coaches, current coverage,
   live-call state, assignment exceptions, unassigned athletes, and unknown
   sectors. `Won` athletes rotate to the end of the live queue; `Lost` athletes move to
   Out and are excluded from that active load.
-- Admin and Coordinator can atomically `Send an available coach to a DE
-  sector` as Side support. The operation rechecks the coach's availability,
-  requires confirmation before replacing existing Side support, preserves
-  athlete-specific assignment exceptions, and clears the coach's available
-  status in the same transaction.
+- Admin and Coordinator can deploy available coaches to DE sectors as equal
+  support. Deployment rechecks availability, preserves athlete-specific
+  assignment exceptions and clears the deployed coach's available status.
+- Planned Pool and DE assignments need no acceptance. For urgent temporary
+  cover, **Request coverage** offers one bout to one or more available coaches.
+  **I'll cover this bout** reserves the first accepting coach; physical arrival
+  is recorded separately with **I’m with [athlete]**.
 - Availability is also cleared automatically when a coach is deployed through
   an assignment, claims live coverage, is assigned as current coverage, or
   becomes involved in an active help request. This prevents a coach who has
@@ -279,9 +295,12 @@ the multi-phone checks in the deployment guide.
   acknowledgement (`I'm coming`), and resolution to every connected coach.
   Alerts are global across the current competition day and always carry their
   event tag.
+- Pool help is reserved for genuine emergencies. An accepted emergency coach
+  can confirm physical arrival; completing the Pool result clears the
+  temporary assistance and releases eligible coaches.
 - One-tap coverage, atomic first-coach-wins claim, release, and coordinator
   coverage on another coach's behalf.
-- Clearer Live-board filters: `Needs Coach`, `Covered Now`, `No Current Call`,
+- **Team situation** filters: `Needs Coach`, `Covered Now`, `No Current Call`,
   and `Out`. These labels distinguish an athlete who has no current parent or
   coordinator call from one who actively needs coverage.
 - Updating a call preserves existing coverage unless the operator explicitly
@@ -294,7 +313,7 @@ the multi-phone checks in the deployment guide.
 - Athlete-specific coach exceptions take precedence over pod defaults on later
   imports.
 - Activity history and guarded Undo.
-- Mobile Live Board and one WhatsApp schedule covering all events, with blue
+- Mobile **Team situation** board and one WhatsApp schedule covering all events, with blue
   Main and orange Side markers and distinct coach-name emphasis.
 - Safe-area-aware top spacing so the competition title remains visible on
   desktop and mobile browsers.
@@ -327,7 +346,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip -o CompCoach_Live_v0.10.4.zip
+unzip -o CompCoach_Live_v0.10.5.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1
@@ -367,7 +386,7 @@ python -m pip install -r compcoach_live/requirements.txt
 The first screen creates a competition day. Its first event is optional, and up
 to four events can be added from Admin Setup. The Admin Share screen then provides:
 
-- Coach Live Board link
+- Coach Team situation link
 - Coordinator link
 
 Each shared link is a credential for its day and automatically moves forward

@@ -156,7 +156,7 @@ def test_learner_result_advances_and_delayed_call_is_not_lost(course):
     assert _tick(database, run)["stage"] == 10
 
 
-def test_virtual_coordinator_assigns_a_new_fencer_with_explicit_receipt(course):
+def test_virtual_coordinator_requests_temporary_coverage_without_changing_plan(course):
     database, _source, _hub, run, advance = course
     primary = _enter_busy_scenario(database, run)
     advance(16)
@@ -171,25 +171,28 @@ def test_virtual_coordinator_assigns_a_new_fencer_with_explicit_receipt(course):
     database.cover_athlete(secondary["event_id"], secondary["id"], "Alex", "Alex", location="J2")
     database.request_help(secondary["event_id"], secondary["id"], "Alex", location="J2")
     assert _tick(database, run)["stage"] == 11
-    previously_assigned = {
-        athlete["id"]
+    previous_plans = {
+        athlete["id"]: athlete.get("de_coaches", [])
         for event in database.list_meet_events(run["id"])
         for athlete in database.list_athletes(event["id"])
-        if "Alex" in athlete.get("de_coaches", [])
     }
     database.mark_result(secondary["event_id"], secondary["id"], outcome="lost", actor="Alex")
     assert _tick(database, run)["stage"] == 12
     assigned = _target(database, run, "reassigned_id")
-    assert assigned["id"] not in previously_assigned
-    notice = next(
-        row for row in database.list_assignment_notices(run["id"], "Alex")
+    assert "Alex" not in previous_plans[assigned["id"]]
+    assert assigned["de_coaches"] == previous_plans[assigned["id"]]
+    request = next(
+        row for row in database.list_coverage_requests(run["id"], "Alex")
         if row["athlete_id"] == assigned["id"]
     )
-    assert notice["assignment_status"] == "pending"
+    assert not request.get("accepted_by")
+    assert "Alex" in {recipient["coach_name"] for recipient in request["recipients"]}
     assert assigned["call_status"] == "on_deck" and assigned["live_location"] == "E2"
-    database.accept_assignment_notice(run["id"], notice["id"], "Alex", actor="Alex")
+    database.accept_coverage_request(run["id"], request["id"], "Alex", actor="Alex")
     assert _tick(database, run)["stage"] == 12
-    assert database.get_athlete(assigned["event_id"], assigned["id"])["covered_by"] == ""
+    accepted = database.get_athlete(assigned["event_id"], assigned["id"])
+    assert accepted["covered_by"] == "" and accepted["takeover_coach"] == "Alex"
+    assert accepted["de_coaches"] == previous_plans[assigned["id"]]
 
 
 def _open_coach_app(database, run, monkeypatch):

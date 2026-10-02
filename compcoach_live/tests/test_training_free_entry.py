@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from uuid import uuid4
 
 import pytest
@@ -168,6 +169,40 @@ def _render_practice_guide(path, meet_id, metadata, role):
     render_training_panel(database, database.get_meet(meet_id), metadata, role, "Jamie")
 
 
+class _GuideDOM(HTMLParser):
+    """Check an actual HTML element tree rather than Markdown source text."""
+
+    def __init__(self):
+        super().__init__()
+        self.guides = []
+        self.actions = 0
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = attributes.get("class", "").split()
+        if tag == "div" and "cc-practice-guide" in classes:
+            self.guides.append(attributes)
+        if tag == "div" and "cc-practice-guide-action" in classes:
+            self.actions += 1
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+
+def _guide_html(app):
+    elements = app.get("html")
+    assert len(elements) == 1, "The pinned guide must use Streamlit's native HTML renderer."
+    assert not app.code, "The guide must never be rendered as a Markdown code block."
+    markup = elements[0].proto.body
+    dom = _GuideDOM()
+    dom.feed(markup)
+    assert len(dom.guides) == 1
+    assert dom.guides[0]["role"] == "note"
+    assert dom.actions == 1
+    return markup, dom
+
+
 def test_mobile_practice_guide_keeps_next_action_fixed_with_reserved_space(db):
     hub = open_hub(db)
     run = training.join_training(db, hub["id"], "Jamie", participant_key=uuid4().hex)
@@ -176,14 +211,13 @@ def test_mobile_practice_guide_keeps_next_action_fixed_with_reserved_space(db):
         _render_practice_guide, args=(str(db.path), run["id"], metadata, "coach"),
     ).run()
     assert not app.exception
-    markup = "\n".join(item.value for item in app.markdown)
-    assert '<div class="cc-practice-guide"' in markup
+    markup, dom = _guide_html(app)
     assert "position: fixed" in markup
     assert "safe-area-inset-top" in markup
     assert "padding-top:" in markup
     assert "--cc-guide-height: 110px" in markup
     assert "Step 1 of 18" in markup
-    assert metadata["guide_instruction"] in markup
+    assert metadata["guide_instruction"] in " ".join(dom.text)
     assert not app.get("progress")
     assert "Need a hint?" in [item.label for item in app.expander]
 
@@ -203,7 +237,8 @@ def test_fixed_guide_only_appears_in_an_active_learner_course(db, state):
         args=(str(db.path), target["id"], metadata, "admin" if state == "admin" else "coach"),
     ).run()
     assert not app.exception
-    assert not any('<div class="cc-practice-guide"' in item.value for item in app.markdown)
+    assert not app.get("html")
+    assert not app.code
 
 
 def test_fixed_guide_escapes_instruction_and_title_html(db):
@@ -215,10 +250,11 @@ def test_fixed_guide_escapes_instruction_and_title_html(db):
         _render_practice_guide, args=(str(db.path), run["id"], metadata, "coach"),
     ).run()
     assert not app.exception
-    markup = "\n".join(item.value for item in app.markdown)
+    markup, dom = _guide_html(app)
     assert "Check &lt;b&gt;name&lt;/b&gt; &amp; strip." in markup
     assert "&lt;script&gt;Title&lt;/script&gt;" in markup
     assert "<script>Title</script>" not in markup
+    assert "Check <b>name</b> & strip." in " ".join(dom.text)
 
 
 def test_pool_help_lesson_teaches_emergencies_and_keeps_simulated_request(db):
@@ -235,3 +271,69 @@ def test_pool_help_lesson_teaches_emergencies_and_keeps_simulated_request(db):
         for athlete in db.list_athletes(event["id"]) if athlete["help_requested_at"]
     ]
     assert len(requests) == 1
+
+
+def _practice_offer(db, monkeypatch):
+    from compcoach_live import storage
+
+    now = [datetime.now(timezone.utc).replace(microsecond=0)]
+    monkeypatch.setattr(training,"utc_now",lambda:now[0].isoformat())
+    monkeypatch.setattr(storage,"utc_now",lambda:now[0].isoformat())
+    hub = open_hub(db)
+    run = training.join_training(db,hub["id"],"Jamie",participant_key=uuid4().hex)
+    for _ in range(12):
+        metadata = training.advance_training(db,run["id"],"Jamie")
+    assert metadata["stage_index"] == 12
+    offer = next(request for request in db.list_coverage_requests(run["id"],"Jamie")
+                 if request["id"] == metadata["state"]["coverage_request_id"])
+    assert len(offer["recipients"]) >= 2
+    return run,offer,now
+
+
+@pytest.mark.parametrize("close_reason",["expiry","cancel"])
+def test_unanswered_practice_offer_is_renewed_without_changing_pod_plan(db,monkeypatch,close_reason):
+    run,offer,now = _practice_offer(db,monkeypatch)
+    before = db.get_athlete(offer["event_id"],offer["athlete_id"])
+    if close_reason == "expiry":
+        now[0] += timedelta(seconds=901)
+    else:
+        db.cancel_coverage_request(run["id"],offer["id"],"Admin")
+    renewed = training.tick_training(db,run["id"],"Jamie","My Group")
+    assert renewed["stage_index"] == 12
+    assert renewed["state"]["coverage_request_id"] != offer["id"]
+    requests = db.list_coverage_requests(run["id"],"Jamie")
+    assert len(requests) == 1
+    assert requests[0]["id"] == renewed["state"]["coverage_request_id"]
+    assert any(recipient["coach_name"] == "Jamie" for recipient in requests[0]["recipients"])
+    athlete = db.get_athlete(offer["event_id"],offer["athlete_id"])
+    assert athlete["de_coaches"] == before["de_coaches"]
+    assert athlete["pod"] == before["pod"]
+    assert not athlete["takeover_coach"] and not athlete["covered_by"]
+    assert athlete["call_status"] == "on_deck" and athlete["live_location"] == "E2"
+    assert next(row for row in db.list_coach_availability(run["id"]) if row["coach_name"] == "Jamie")["is_available"]
+
+
+def test_accepted_practice_offer_never_gets_renewed_or_reclaimed(db,monkeypatch):
+    run,offer,now = _practice_offer(db,monkeypatch)
+    db.accept_coverage_request(run["id"],offer["id"],"Jamie",actor="Jamie")
+    now[0] += timedelta(seconds=901)
+    current = training.tick_training(db,run["id"],"Jamie","My Group")
+    assert current["stage_index"] == 12
+    assert current["state"]["coverage_request_id"] == offer["id"]
+    assert not current["state"]["pending_events"]
+    athlete = db.get_athlete(offer["event_id"],offer["athlete_id"])
+    assert athlete["takeover_coach"] == "Jamie"
+    assert not athlete["covered_by"]
+    assert not db.list_coverage_requests(run["id"])
+    all_requests = db.list_coverage_requests(run["id"],pending_only=False)
+    assert len(all_requests) == 1 and all_requests[0]["status"] == "accepted"
+
+
+def test_restart_removes_old_practice_coverage_requests_and_recipients(db,monkeypatch):
+    run,offer,_now = _practice_offer(db,monkeypatch)
+    restarted = training.restart_training(db,run["id"],"Jamie")
+    assert restarted["coach_token"] == run["coach_token"]
+    assert training.get_training(db,run["id"])["stage_index"] == 0
+    assert db.list_coverage_requests(run["id"],pending_only=False) == []
+    with db._connection() as conn:
+        assert not conn.execute("SELECT 1 FROM coverage_request_recipients WHERE request_id = ?",(offer["id"],)).fetchone()

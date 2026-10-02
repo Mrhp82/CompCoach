@@ -50,7 +50,7 @@ try:
     from compcoach_live.ocr_import import parse_screenshot
     from compcoach_live.parsers import parse_pasted_table, import_name_noise_reason
     from compcoach_live.import_cleanup import quarantine_import_noise
-    from compcoach_live.live_controls import render_live_controls
+    from compcoach_live.live_controls import render_live_controls, render_pool_takeover_arrival
     from compcoach_live.busy_board import render_busy_coach_board
     from compcoach_live.de_rotation import ordered_de_athletes
     from compcoach_live.de_corrections_ui import render_de_result_corrections
@@ -85,7 +85,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from ocr_import import parse_screenshot
     from parsers import parse_pasted_table, import_name_noise_reason
     from import_cleanup import quarantine_import_noise
-    from live_controls import render_live_controls
+    from live_controls import render_live_controls, render_pool_takeover_arrival
     from busy_board import render_busy_coach_board
     from de_rotation import ordered_de_athletes
     from de_corrections_ui import render_de_result_corrections
@@ -102,7 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.4"
+APP_VERSION = "0.10.5"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -303,10 +303,12 @@ def select_nav(options: list[str], key: str) -> str:
     default = saved if saved in options else options[0]
     if hasattr(st, "segmented_control"):
         value = st.segmented_control("Navigation", options, default=default,
-                                     key=key, label_visibility="collapsed")
+                                     key=key, label_visibility="collapsed",
+                                     format_func=lambda option: "Team situation" if option == "Live" else option)
     else:
         value = st.radio("Navigation", options, index=options.index(default),
-                         horizontal=True, key=key, label_visibility="collapsed")
+                         horizontal=True, key=key, label_visibility="collapsed",
+                         format_func=lambda option: "Team situation" if option == "Live" else option)
     choice = value or default
     st.session_state[saved_key] = choice
     return choice
@@ -677,6 +679,7 @@ def clear_actor_state(event_id: str, role: str) -> None:
         "situation_view_",
         "availability_override_",
         "deploy_",
+        "emergency_request_",
         "active_event_",
     )
     for key in list(st.session_state):
@@ -2440,7 +2443,13 @@ def render_athlete_card(
             render_live_controls(db, event, role, actor, athlete,
                                  key_prefix="personal" if personal else "live", coach_states=coach_states, meet_state=meet_state)
         else:
-            if status != "waiting" and not athlete.get("covered_by") and writable and not stale:
+            render_pool_takeover_arrival(
+                db, event, role, actor, athlete,
+                key_prefix="personal" if personal else "live", coach_states=coach_states,
+            )
+            if athlete.get("takeover_coach") == actor:
+                pass  # The owner has the guarded physical-arrival control above.
+            elif status != "waiting" and not athlete.get("covered_by") and writable and not stale:
                 if st.button(
                     f"I’ll cover {athlete['name']}",
                     type="primary",
@@ -2650,7 +2659,7 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
     active_de = [a for a in active if a["phase"] == "de"]
     statuses = db.list_coach_availability(event["id"])
     available_count = sum(bool(row.get("is_available")) for row in statuses)
-    st.markdown("### Live")
+    st.markdown("### Team situation")
     current_status = next((row for row in statuses if row["coach_name"] == actor), {})
     if current_status.get("is_busy"):
         render_availability_control(event, actor, athletes, compact=True)
@@ -2662,7 +2671,8 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
     )
     st.caption(f"{len(stale_needs)} calls to verify · {len(waiting)} waiting · {len(out)} out")
     if role in {"admin", "coordinator"}:
-        render_assignment_confirmations(event)
+        render_emergency_coverage_request(event, role, actor, athletes, statuses)
+        render_assignment_confirmations(event, actor)
     views = ["Uncovered", "Needs Coach", "Covered Now", "No Current Call", "Out"]
     view = select_nav(views, f"live_view_{event['id']}_{role}")
     migrated_panel = st.session_state.get(f"live_migrated_panel_{event['id']}_{role}")
@@ -2951,7 +2961,7 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
         + (f" · {temporary_count} temporary" if temporary_count else "")
     )
     if not mine:
-        st.info("No athletes are assigned to you right now. Open Live → All assignments to see the full staff plan.")
+        st.info("No athletes are assigned to you right now. Open Team situation → All assignments to see the full staff plan.")
         return
 
     visible_event_ids = {row["event_id"] for row in working_mine if row.get("phase") == "pools"}
@@ -3060,41 +3070,132 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
 def render_assignment_notice_panel(meet: dict, role: str, actor: str) -> None:
     if actor not in meet.get("active_coaches", []) or meet.get("status") != "open":
         return
-    notices = visible_pool_wave_rows(db.list_assignment_notices(meet["id"], actor))
+    notices = visible_pool_wave_rows(db.list_coverage_requests(meet["id"], actor))
     if not notices:
         return
+    own_status = next((row for row in db.list_coach_availability(meet["id"])
+                       if row["coach_name"] == actor), {})
     with st.container(border=True):
-        label = "New assignment" if len(notices) == 1 else f"{len(notices)} new assignments"
-        st.markdown(f"<div class='cc-new-assignment'>🆕 {label} · confirmation needed</div>", unsafe_allow_html=True)
-        st.caption("Accept to confirm responsibility. Use I’m with… when you arrive at the bout.")
+        label = "Coverage request" if len(notices) == 1 else f"{len(notices)} coverage requests"
+        st.markdown(f"<div class='cc-new-assignment'>🚨 {label}</div>", unsafe_allow_html=True)
+        st.caption("First coach to accept takes responsibility. Confirm arrival when you are with the athlete.")
         for notice in sorted(notices, key=lambda row: ({"now": 0, "on_deck": 1, "in_hole": 2}.get(row.get("call_status"), 3), row["created_at"])):
             st.markdown(f"<div class='cc-assignment-name'>{esc(notice['athlete_name'])}</div>", unsafe_allow_html=True)
             call = CALL_LABELS.get(notice.get("call_status"), "Not called yet")
             st.markdown(f"**{esc(call)}** · {esc(assignment_notice_details(notice))}")
-            st.caption(f"Assigned by {notice.get('assigned_by') or 'Coordinator'} · {age_text(notice.get('created_at'))}")
-            if st.button("Accept assignment", key=f"accept_assignment_{notice['id']}", width="stretch", type="primary"):
-                try:
-                    db.accept_assignment_notice(meet["id"], notice["id"], actor, actor=actor)
-                    st.toast(f"Assignment accepted: {notice['athlete_name']}.")
-                    st.rerun(scope="app")
-                except CompCoachError as exc:
-                    show_error(exc)
+            st.caption(f"Requested by {notice.get('created_by') or 'Coordinator'} · {age_text(notice.get('created_at'))}")
+            recipients = notice.get("recipients") or []
+            names = [row["coach_name"] for row in recipients]
+            if len(names) > 1:
+                st.caption("Also notified: " + " / ".join(name for name in names if name != actor))
+            if not own_status.get("is_available"):
+                st.caption("You are not currently available. Finish or release your current responsibility first.")
+            st.button(
+                "I'll cover this bout", key=f"accept_coverage_request_{notice['id']}",
+                width="stretch", type="primary", disabled=not own_status.get("is_available"),
+                on_click=accept_coverage_request_snapshot,
+                args=(meet["id"], notice["id"], actor,
+                      int(notice["version"]), int(notice["athlete_version"]),
+                      int(own_status.get("version") or 0)),
+            )
 
 
-def render_assignment_confirmations(meet: dict) -> None:
-    notices = db.list_assignment_notices(meet["id"], pending_only=False)
-    with st.expander("Assignment confirmations", expanded=False):
-        pending = sum(not row.get("accepted_at") for row in notices)
-        st.caption(f"{pending} awaiting acceptance · {len(notices) - pending} accepted")
+def accept_coverage_request_snapshot(
+    meet_id: str, request_id: str, actor: str,
+    request_version: int, athlete_version: int, coach_version: int,
+) -> None:
+    try:
+        db.accept_coverage_request(
+            meet_id, request_id, actor, actor=actor,
+            expected_request_version=request_version,
+            expected_version=athlete_version,
+            expected_coach_version=coach_version,
+        )
+        st.session_state["de_fast_notice"] = (True, "You have taken responsibility for this bout. Confirm arrival in the athlete card.")
+    except (CompCoachError, ValueError) as exc:
+        st.session_state["de_fast_notice"] = (False, str(exc))
+    st.session_state["de_fast_refresh"] = True
+
+
+def send_coverage_request_snapshot(
+    meet_id: str, athlete: dict, coaches: list[str], actor: str,
+    coach_versions: dict[str, int],
+) -> None:
+    try:
+        db.create_coverage_request(
+            meet_id, athlete["event_id"], athlete["id"], coach_names=coaches, actor=actor,
+            expected_version=int(athlete["version"]),
+            expected_coach_versions=coach_versions,
+        )
+        st.session_state["de_fast_notice"] = (True, f"Coverage requested for {athlete['name']} · " + " / ".join(coaches) + ".")
+    except (CompCoachError, ValueError) as exc:
+        st.session_state["de_fast_notice"] = (False, str(exc))
+    st.session_state["de_fast_refresh"] = True
+
+
+def render_emergency_coverage_request(
+    meet: dict, role: str, actor: str, athletes: list[dict], statuses: list[dict],
+) -> None:
+    if role not in {"admin", "coordinator"} or meet.get("status") != "open":
+        return
+    with st.expander("🚨 Request coverage for a bout", expanded=False):
+        st.caption("For an unexpected bout needing help. Notify one or more available coaches; the first acceptance closes the request for everyone else. Your ordinary pool and pod plan stays in place.")
+        available = {row["coach_name"]: row for row in statuses if row.get("is_available")}
+        if not available:
+            st.info("No coach is currently marked available to help.")
+            return
+        pending_ids = {row["athlete_id"] for row in db.list_coverage_requests(meet["id"])}
+        eligible = [row for row in operational_view_athletes(athletes)
+                    if not row.get("covered_by") and not row.get("takeover_coach")
+                    and row["id"] not in pending_ids
+                    and not (row["phase"] == "pools" and row.get("pool_result_at"))]
+        if not eligible:
+            st.info("No uncovered athlete is available for a new request.")
+            return
+        by_id = {row["id"]: row for row in sorted(eligible, key=call_sort_key)}
+        athlete_id = st.selectbox(
+            "Athlete needing coverage", list(by_id),
+            format_func=lambda item: athlete_option(by_id[item]),
+            key=f"emergency_request_athlete_{meet['id']}_{role}",
+        )
+        athlete = by_id[athlete_id]
+        st.markdown(f"**{esc(athlete['name'])}** · {esc(CALL_LABELS.get(athlete.get('call_status'), 'Not called yet'))} · {esc(assignment_notice_details(athlete))}")
+        coaches = st.multiselect(
+            "Available coaches to notify", list(available),
+            key=f"emergency_request_coaches_{meet['id']}_{role}",
+        )
+        st.caption("Requests expire after 15 minutes. Cancel and send a new request if circumstances change.")
+        st.button(
+            "Request coverage", width="stretch", type="primary", disabled=not coaches or not actor,
+            key=f"emergency_request_send_{meet['id']}_{role}",
+            on_click=send_coverage_request_snapshot,
+            args=(meet["id"], dict(athlete), list(coaches), actor,
+                  {name: int(available[name].get("version") or 0) for name in coaches}),
+        )
+
+
+def render_assignment_confirmations(meet: dict, actor: str) -> None:
+    notices = db.list_coverage_requests(meet["id"], pending_only=False)
+    with st.expander("Coverage requests · responses", expanded=False):
+        pending = sum(row["status"] == "pending" for row in notices)
+        accepted = sum(row["status"] == "accepted" for row in notices)
+        st.caption(f"{pending} awaiting response · {accepted} accepted")
         if not notices:
-            st.info("No current assignment confirmations.")
-        for notice in sorted(notices, key=lambda row: (bool(row.get("accepted_at")), row["created_at"])):
-            accepted = bool(notice.get("accepted_at"))
-            state = "✅ Accepted" if accepted else "🟠 Awaiting acceptance"
-            st.markdown(f"**{esc(notice['athlete_name'])} → {esc(notice['coach_name'])}** · {state}")
+            st.info("No coverage requests. Ordinary pool and pod assignments need no acceptance.")
+        recent = sorted(notices, key=lambda row: row["created_at"], reverse=True)
+        for notice in sorted(recent, key=lambda row: row["status"] != "pending")[:40]:
+            state = "✅ Taken by " + str(notice.get("accepted_by") or "") if notice["status"] == "accepted" else "🟠 Awaiting response" if notice["status"] == "pending" else notice["status"].title()
+            st.markdown(f"**{esc(notice['athlete_name'])}** · {esc(state)}")
             st.caption(assignment_notice_details(notice))
-            if accepted:
-                st.caption(f"Accepted by {notice.get('accepted_by')} · {age_text(notice.get('accepted_at'))}")
+            recipients = " / ".join(row["coach_name"] for row in notice.get("recipients") or [])
+            st.caption(f"Notified: {recipients} · Requested by {notice.get('created_by')} · {age_text(notice['created_at'])}")
+            if notice["status"] == "pending" and st.button("Cancel request", key=f"cancel_coverage_request_{notice['id']}", width="stretch"):
+                try:
+                    db.cancel_coverage_request(meet["id"], notice["id"], actor=actor, expected_version=int(notice["version"]))
+                    st.toast("Coverage request cancelled.")
+                    st.rerun(scope="app")
+                except (CompCoachError, ValueError) as exc:
+                    show_error(exc)
 
 
 def assignment_details(athlete: dict) -> str:
@@ -3939,7 +4040,7 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
                     lines.append(f"• {time_note}{where} · {row['name']}")
                 lines.append("")
     if coach_link.startswith("http"):
-        lines.extend(["Live board:", coach_link])
+        lines.extend(["Team situation:", coach_link])
     return "\n".join(lines).strip()
 
 
@@ -3948,7 +4049,7 @@ def render_share(event: dict) -> None:
     practice = get_training(db, event["id"])
     coach = public_link(event, "coach")
     coordinator = public_link(event, "coordinator")
-    st.markdown("**Coach practice link**" if practice else "**Coach Live Board**")
+    st.markdown("**Coach practice link**" if practice else "**Coach link**")
     st.code(coach, language=None)
     if coach.startswith("http"):
         st.link_button("Open Coach Board", coach, width="stretch")
@@ -3972,10 +4073,13 @@ def render_share(event: dict) -> None:
         f"https://wa.me/?text={quote(message)}",
         width="stretch",
     )
-    st.caption("Each coach has a separate course. This link is for practice only." if practice else "This is a static snapshot. The shared Live Board remains the current source during the competition.")
+    st.caption("Each coach has a separate course. This link is for practice only." if practice else "This is a static snapshot. Team situation remains the current source during the competition.")
 
 
 ACTION_LABELS = {
+    "coverage_requested": "requested emergency coverage",
+    "coverage_request_accepted": "accepted emergency coverage",
+    "coverage_request_cancelled": "cancelled emergency coverage request",
     "assignment_accepted": "accepted assignment",
     "live_update": "updated live call",
     "claim": "took coverage",
