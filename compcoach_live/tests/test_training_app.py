@@ -74,9 +74,23 @@ def training_hub(database, day):
     from compcoach_live.training import start_training
 
     return start_training(
-        database, source_meet_id=day["id"], coach_names=["Alex", "Robin"],
+        database, source_meet_id=day["id"], coach_names=[], open_entry=True,
         actor="Admin", duration_days=14,
     )
+
+
+def enter_practice(app, name):
+    field = next(item for item in app.text_input if item.label == "Your name")
+    field.set_value(name)
+    button(app, "Start my practice").click().run()
+    assert not app.exception
+    return app
+
+
+def legacy_training_hub(database, day):
+    from compcoach_live.training import start_training
+
+    return start_training(database, source_meet_id=day["id"], coach_names=["Alex", "Robin"], actor="Admin")
 
 
 def test_admin_activates_two_week_practice_without_instructor_controls(database):
@@ -104,14 +118,14 @@ def test_admin_activates_two_week_practice_without_instructor_controls(database)
     assert database.list_athletes(event["id"]) == athletes_before
 
 
-def test_coach_link_selects_identity_and_starts_separate_resumable_courses(database):
+def test_coach_link_accepts_names_and_starts_separate_resumable_courses(database):
     day, event = source_day(database)
     athletes_before = database.list_athletes(event["id"])
     hub = training_hub(database, day)
     alex = open_board(hub)
-    assert any(item.value == "Who are you?" for item in alex.subheader)
+    assert any(item.label == "Your name" for item in alex.text_input)
     assert not alex.get("button_group")
-    button(alex, "Alex").click().run()
+    enter_practice(alex, "  Alex  ")
 
     assert not alex.exception
     alex_run = query(alex, "event")
@@ -120,7 +134,7 @@ def test_coach_link_selects_identity_and_starts_separate_resumable_courses(datab
     assert nav(alex, "coach_nav_").options == ["My Group", "Live"]
     assert not any("training_end_" in str(item.key) for item in alex.button)
 
-    robin = open_board(hub, who="Robin")
+    robin = enter_practice(open_board(hub), "Robin")
     assert not robin.exception
     robin_run = query(robin, "event")
     assert robin_run not in {hub["id"], alex_run}
@@ -131,7 +145,7 @@ def test_coach_link_selects_identity_and_starts_separate_resumable_courses(datab
     assert {item["id"] for item in alex_events}.isdisjoint(item["id"] for item in robin_events)
     assert database.list_athletes(event["id"]) == athletes_before
 
-    reopened = open_board(hub, who="Alex")
+    reopened = open_board(database.get_meet(alex_run), who="Alex")
     assert not reopened.exception
     assert query(reopened, "event") == alex_run
     assert nav(reopened, "coach_nav_").options == ["My Group", "Live"]
@@ -147,22 +161,51 @@ def test_ordinary_coach_screen_keeps_training_management_private(database):
     assert not any(item.label == "Activate autonomous practice" for item in app.button)
 
 
-def test_invalid_practice_identity_cannot_bypass_selection(database):
+def test_shared_practice_link_does_not_resume_from_name_in_query(database):
     day, _event = source_day(database)
     hub = training_hub(database, day)
     app = open_board(hub, who="Unknown coach")
     assert not app.exception
     assert query(app, "event") == hub["id"]
-    assert any(item.value == "Who are you?" for item in app.subheader)
+    assert any(item.label == "Your name" for item in app.text_input)
     assert not app.get("button_group")
     assert not any((item.key or "").startswith(("won_", "pool_result_", "help_request_")) for item in app.button)
+
+
+def test_same_name_in_two_browser_sessions_gets_two_fresh_courses(database):
+    from compcoach_live.training import get_training
+
+    day, _event = source_day(database)
+    hub = training_hub(database, day)
+    first = enter_practice(open_board(hub), "Casey")
+    second = enter_practice(open_board(hub), "Casey")
+    first_id, second_id = query(first, "event"), query(second, "event")
+    assert first_id != second_id
+    assert first_id != hub["id"] and second_id != hub["id"]
+    assert query(first, "who") == query(second, "who") == "Casey"
+    assert get_training(database, first_id)["learner"] == "Casey"
+    assert get_training(database, second_id)["learner"] == "Casey"
+    first_events = {item["id"] for item in database.list_meet_events(first_id)}
+    second_events = {item["id"] for item in database.list_meet_events(second_id)}
+    assert first_events.isdisjoint(second_events)
+    assert not first.exception and not second.exception
+
+
+def test_blank_name_stays_on_shared_practice_link_with_clear_error(database):
+    day, _event = source_day(database)
+    hub = training_hub(database, day)
+    app = open_board(hub)
+    button(app, "Start my practice").click().run()
+    assert query(app, "event") == hub["id"]
+    assert app.error and not app.exception
+    assert any(item.label == "Your name" for item in app.text_input)
 
 
 def test_direct_run_link_does_not_offer_virtual_coach_identity(database):
     from compcoach_live.training import get_training, join_training
 
     day, _event = source_day(database)
-    hub = training_hub(database, day)
+    hub = legacy_training_hub(database, day)
     run = join_training(database, hub["id"], "Alex")
     metadata = get_training(database, run["id"])
     assert metadata["learner"] == "Alex"
@@ -181,7 +224,7 @@ def test_home_keeps_personal_runs_out_of_real_competition_list(database):
     from compcoach_live.training import join_training
 
     day, _event = source_day(database)
-    hub = training_hub(database, day)
+    hub = legacy_training_hub(database, day)
     alex = join_training(database, hub["id"], "Alex")
     robin = join_training(database, hub["id"], "Robin")
     home = AppTest.from_file(APP_PATH, default_timeout=25)
@@ -205,7 +248,7 @@ def test_expired_hub_and_its_direct_run_close_without_affecting_real_day(databas
     day, event = source_day(database)
     source_before = database.get_meet(day["id"])
     athletes_before = database.list_athletes(event["id"])
-    hub = training_hub(database, day)
+    hub = legacy_training_hub(database, day)
     run = join_training(database, hub["id"], "Alex")
     with database._connection() as conn:
         for board in (hub, run):
@@ -229,7 +272,7 @@ def test_practice_uses_ordinary_pool_result_controls_and_persists_taps(database)
     day, source_event = source_day(database)
     source_before = database.list_athletes(source_event["id"])
     hub = training_hub(database, day)
-    app = open_board(hub, who="Alex")
+    app = enter_practice(open_board(hub), "Alex")
     assert not app.exception
     run_id = query(app, "event")
     learner_athletes = [
@@ -251,7 +294,7 @@ def test_practice_uses_ordinary_pool_result_controls_and_persists_taps(database)
     assert not app.exception
     stored = database.get_athlete(athlete["event_id"], athlete["id"])
     assert (stored["pool_wins"], stored["pool_losses"], stored["pool_result_by"]) == (4, 2, "Alex")
-    resumed = open_board(hub, who="Alex")
+    resumed = open_board(database.get_meet(run_id), who="Alex")
     assert not resumed.exception
     assert query(resumed, "event") == run_id
     assert database.list_athletes(source_event["id"]) == source_before
@@ -263,7 +306,7 @@ def test_admin_can_end_practice_access_without_finishing_real_competition(databa
     day, event = source_day(database)
     day_before = database.get_meet(day["id"])
     athletes_before = database.list_athletes(event["id"])
-    hub = training_hub(database, day)
+    hub = legacy_training_hub(database, day)
     run = join_training(database, hub["id"], "Alex")
     admin = open_board(hub, role="admin", who="Alex")
     assert not admin.exception
@@ -284,7 +327,7 @@ def test_completed_coach_can_repeat_without_resetting_other_coach(database):
     from compcoach_live.training import TRAINING_STEPS, get_training, join_training
 
     day, _event = source_day(database)
-    hub = training_hub(database, day)
+    hub = legacy_training_hub(database, day)
     alex = join_training(database, hub["id"], "Alex")
     robin = join_training(database, hub["id"], "Robin")
     robin_before = get_training(database, robin["id"])

@@ -180,6 +180,23 @@ da dati che il server potrebbe aver salvato.
 6. Avvia il deploy. Se il link scelto cambia, aggiorna anche
    `COMPCOACH_PUBLIC_URL` nei Secrets e riavvia l'app.
 
+### Accesso dei coach senza login
+
+In Streamlit Community Cloud apri **App settings → Sharing** e verifica che
+**Who can view this app** sia impostato su **This app is public and searchable**.
+Un'app pubblica si apre dal link senza account Streamlit o GitHub, anche se il
+repository del codice è privato. La procedura è descritta nella
+[guida ufficiale alla condivisione](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app).
+
+Dentro CompCoach condividi **Share → Coach link**, oppure il link dedicato
+alla pratica. In gara il coach seleziona il proprio nome; nella pratica lo
+scrive e preme **Start my practice**. Non deve inserire PIN o creare account.
+Il PIN nella pagina iniziale riguarda l'amministratore: il solo indirizzo
+principale dell'app non è il link operativo per i coach.
+
+Per verificare l'intero percorso, apri il Coach link in una finestra privata
+del browser o su un telefono senza sessioni Streamlit/GitHub.
+
 Le dipendenze Python vengono installate dal repository; `packages.txt` fornisce
 la libreria di sistema usata dall'OCR. Se il deploy segnala una dipendenza
 mancante, conserva il messaggio di errore senza includere i Secrets.

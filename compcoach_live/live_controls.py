@@ -160,7 +160,10 @@ def render_live_controls(db: Any, event: dict, role: str, actor: str,
                   on_click=_mark_busy,
                   args=(db, event_id, athlete_id, actor, version, strip_key, None,
                         coach_key, coach_versions))
-    elif not coverage or coverage == actor:
+    elif not coverage:
+        # Physical coverage is already confirmed once covered_by is set. A
+        # pending takeover is only a promise, so it still needs this button.
+        # Keep call/location edits and release available for the busy coach.
         st.button(f"I’m with {athlete['name']}", key=f"{base}_busy", width="stretch",
                   on_click=_mark_busy,
                   args=(db, event_id, athlete_id, actor, version, strip_key, actor,

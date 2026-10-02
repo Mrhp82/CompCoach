@@ -84,7 +84,7 @@ def test_results_rotate_the_wheel_continuously_with_no_ready_gate(wheel_scenario
     assert "Next bout · 2 rounds passed" in _text(app)
 
 
-def test_wheel_uses_last_result_time_even_when_next_round_overlaps(wheel_scenario):
+def test_personal_queue_prioritizes_new_calls_without_changing_waiting_rotation(wheel_scenario):
     database, meet, events, athletes = wheel_scenario
     names = ["TEST Alex", "TEST Robin", "TEST Taylor"]
     app = open_board(meet["id"], meet["coach_token"], "Carmine")
@@ -95,7 +95,7 @@ def test_wheel_uses_last_result_time_even_when_next_round_overlaps(wheel_scenari
     assert database.get_athlete(events[0]["id"], athletes[names[1]]["id"])["de_wins"] == 1
     _strip(app, athletes[names[0]], "C3")
     keyed(app.button, _live_key(athletes[names[0]], "call_now")).click().run()
-    assert _order(app, names) == [names[2], names[0], names[1]]
+    assert _order(app, names) == [names[0], names[2], names[1]]
     assert "C3" in _text(app)
     assert keyed(app.button, f"won_{athletes[names[0]]['id']}")
     assert not app.exception

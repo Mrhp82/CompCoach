@@ -218,7 +218,14 @@ def test_all_staff_roles_can_cancel_or_confirm_pool_absence_on_live(
         if action["action"] == "participation_absent"
     )
     assert action["actor"] == actor
-    app.run()
+    # When the Admin's last assigned pool becomes absent, the availability
+    # override checkbox disappears. AppTest retains that removed fragment
+    # widget after the app rerun, even though Streamlit has cleaned its state.
+    # Reopen the public Live view, as in the coach recovery test above, to
+    # inspect the persisted absence and exercise its recovery controls.
+    app = open_board(meet["id"], meet[f"{role}_token"], actor)
+    nav_named(app, f"{role}_nav_").set_value("Live").run()
+    nav_named(app, "live_view_").set_value("No Current Call").run()
     _absent_section(app, 1)
     assert "TEST Alex" not in _active_card_names(app)
     assert "TEST Morgan · P3" in _help_markup(app)

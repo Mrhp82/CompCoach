@@ -8,7 +8,9 @@ never provides replacement buttons for a coach's real workflow.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
+from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,7 +26,6 @@ except ModuleNotFoundError:  # pragma: no cover - Streamlit script entry point
     from storage import CompCoachError
 
 
-PRACTICE_COACHES = ["Morgan", "Taylor", "Riley", "Casey"]
 STATUS_LABELS = {
     "running": "Exercise running",
     "paused": "Exercise paused",
@@ -35,14 +36,6 @@ STATUS_LABELS = {
 
 def _unique_names(values: list[Any]) -> list[str]:
     return canonical_coach_names(values)
-
-
-def _coach_choices(db: Any, source_meet: dict[str, Any] | None) -> tuple[list[str], list[str]]:
-    directory = [row["name"] for row in db.list_coaches(active_only=True)]
-    present = list((source_meet or {}).get("active_coaches") or [])
-    choices = _unique_names([*present, *directory]) or list(PRACTICE_COACHES)
-    defaults = _unique_names(present) or choices
-    return choices, defaults
 
 
 def render_training_start(
@@ -61,31 +54,15 @@ def render_training_start(
 
     st.markdown("#### 🧪 Practice exercise")
     st.caption(
-        "Coaches learn with the real My Group and Live controls. Each coach gets "
-        "a full personal course, from pools to the final bout, even if joining later."
+        "Share one practice link. Each coach types their own name and starts "
+        "a separate course, from pools to the final bout, even if joining later."
     )
     st.info(
         "Practice creates separate exercises with fictional athletes and virtual teammates. "
         "Your current competition, assignments, and results stay unchanged."
     )
-    choices, defaults = _coach_choices(db, source_meet)
     scope = str((source_meet or {}).get("id") or "home")
     with st.form(f"training_start_{scope}"):
-        selected = st.multiselect(
-            "Coaches taking part",
-            choices,
-            default=defaults,
-            key=f"training_coaches_{scope}",
-            accept_new_options=True,
-            placeholder="Select coaches or type a new name",
-        )
-        st.caption("To add a practice coach here, type the name and select Add.")
-        additional = st.text_area(
-            "Additional practice coaches (optional)",
-            placeholder="One name per line",
-            help="Use your coaches' names for the exercise, or fictional names for a solo demo.",
-            key=f"training_extra_coaches_{scope}",
-        )
         duration_days = st.radio(
             "Practice link stays open for",
             [7, 14],
@@ -97,24 +74,22 @@ def render_training_start(
             "Coaches can practice whenever they want. The app plays the coordinator "
             "and other coaches; you do not need to supervise or advance the scenarios."
         )
+        st.caption(
+            "You do not need to prepare a coach list. Even coaches who enter the "
+            "same name get separate practice progress and personal links."
+        )
         submitted = st.form_submit_button("Activate autonomous practice", width="stretch")
     if not submitted:
         return None
 
-    names = canonical_coach_names(
-        [*selected, *additional.replace(",", "\n").splitlines()],
-        [*(row["name"] for row in db.list_coaches()), *choices],
-    )
-    if not names:
-        st.error("Choose at least one coach, or enter a practice coach name.")
-        return None
     try:
         meet = training.start_training(
             db,
             source_meet_id=(source_meet or {}).get("id"),
-            coach_names=names,
+            coach_names=[],
             actor=actor,
             duration_days=duration_days,
+            open_entry=True,
         )
     except (CompCoachError, TypeError, ValueError) as exc:
         st.error(str(exc))
@@ -149,6 +124,71 @@ def _expiry_label(value: Any, meet: dict[str, Any]) -> str:
         return str(value)
 
 
+def _render_persistent_guide(stage: int, stage_count: int, title: str, instruction: str, paused: bool) -> None:
+    """Keep the next action visible beneath Streamlit's header while scrolling.
+
+    A scoped top inset reserves the guide's full height at the start of the
+    page. Only the title may ellipsize; the action remains readable and can
+    scroll within the guide if a custom instruction is unusually long.
+    """
+    paused_label = " · Paused" if paused else ""
+    st.markdown(
+        f"""<style>
+        .stApp:has(.cc-practice-guide) {{ --cc-guide-height: 100px; }}
+        .stApp:has(.cc-practice-guide) .block-container {{
+          padding-top: calc(4rem + env(safe-area-inset-top, 0px) + var(--cc-guide-height) + .6rem) !important;
+        }}
+        .stApp:has(.cc-practice-guide) [data-testid="stMain"] {{
+          scroll-padding-top: calc(4rem + env(safe-area-inset-top, 0px) + var(--cc-guide-height) + .6rem);
+        }}
+        .cc-practice-guide {{
+          position: fixed; top: calc(3.75rem + env(safe-area-inset-top, 0px));
+          left: 50%; transform: translateX(-50%); width: min(736px, calc(100vw - 24px));
+          height: var(--cc-guide-height, 100px); box-sizing: border-box;
+          z-index: 998; padding: 9px 12px; overflow-y: auto;
+          border: 1px solid #b7c8e8; border-radius: 12px;
+          background: #f2f6ff; color: #183153; box-shadow: 0 3px 12px #1831531f;
+          font-family: inherit;
+        }}
+        .cc-practice-guide-top {{display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px;}}
+        .cc-practice-guide-step {{font-size: 11px; font-weight: 700; white-space: nowrap;}}
+        .cc-practice-guide-title {{font-size: 13px; font-weight: 750; overflow: hidden;
+          white-space: nowrap; text-overflow: ellipsis; min-width: 0;}}
+        .cc-practice-guide-action {{font-size: 14px; line-height: 1.3; font-weight: 600;
+          overflow-wrap: anywhere;}}
+        @media (max-width: 600px) {{
+          .stApp:has(.cc-practice-guide) {{--cc-guide-height: 110px;}}
+          .cc-practice-guide {{width: calc(100vw - 16px); padding: 8px 10px;}}
+          .cc-practice-guide-action {{font-size: 13.5px; line-height: 1.3;}}
+        }}
+        </style>
+        <div class="cc-practice-guide" role="note" aria-label="Training practice guide">
+          <div class="cc-practice-guide-top">
+            <span class="cc-practice-guide-step">🧪 Step {min(stage + 1, stage_count)} of {stage_count}{paused_label}</span>
+            <span class="cc-practice-guide-title" title="{escape(title, quote=True)}">{escape(title)}</span>
+          </div>
+          <div class="cc-practice-guide-action">{escape(instruction)}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_hint(metadata: dict[str, Any], meet: dict[str, Any], status: str, instruction: str) -> None:
+    with st.expander("Need a hint?"):
+        st.caption(STATUS_LABELS.get(status, status.title()))
+        if instruction:
+            st.markdown(instruction)
+        if metadata.get("expires_at"):
+            st.caption(f"Practice access ends {_expiry_label(metadata['expires_at'], meet)}")
+        if metadata.get("scenario_message"):
+            st.info(str(metadata["scenario_message"]))
+        if metadata.get("last_feedback"):
+            st.caption(f"✓ {metadata['last_feedback']}")
+        if metadata.get("hint"):
+            st.markdown("**Hint**")
+            st.markdown(str(metadata["hint"]))
+
+
 def render_training_panel(
     db: Any,
     meet: dict[str, Any],
@@ -170,9 +210,21 @@ def render_training_panel(
     instruction = str(actor_tasks.get(actor) or metadata.get("instruction") or "")
     feedback = str(metadata.get("last_feedback") or "")
     progress = max(0.0, min(float(metadata.get("progress") or 0), 1.0))
+    persistent_guide = (
+        role == "coach" and not is_hub and status in {"running", "paused"} and not metadata.get("expired")
+    )
+    if persistent_guide:
+        _render_persistent_guide(
+            stage, stage_count, stage_title,
+            str(metadata.get("guide_instruction") or instruction), status == "paused",
+        )
+        _render_hint(metadata, meet, status, instruction)
 
-    with st.container(border=True):
-        st.markdown("**🧪 TRAINING · Practice only**")
+    with (nullcontext() if persistent_guide else st.container(border=True)):
+        if persistent_guide:
+            pass
+        else:
+            st.markdown("**🧪 TRAINING · Practice only**")
         if is_hub or status in {"completed", "stopped"} or metadata.get("expired"):
             st.caption(STATUS_LABELS.get(status, status.title()))
             if metadata.get("expires_at"):
@@ -194,10 +246,11 @@ def render_training_panel(
             st.success("Autonomous practice is open. Coaches can join whenever they are ready.")
             st.markdown(
                 "Open **Share** and send the **coach practice link**. Each coach "
-                "gets the full course; the app plays the coordinator and other coaches."
+                "types their own name and starts a separate full course; the app "
+                "plays the coordinator and other coaches."
             )
             st.caption("You can leave the app. Coach progress is saved automatically.")
-        else:
+        elif not persistent_guide:
             st.markdown(f"**Step {min(stage + 1, stage_count)} of {stage_count} · {stage_title}**")
             st.progress(progress)
             if instruction:
@@ -206,18 +259,7 @@ def render_training_panel(
                 st.caption(str(metadata["scenario_message"]))
             if status == "paused":
                 st.warning("Automatic practice scenarios are paused.")
-            hint = str(metadata.get("hint") or "")
-            with st.expander("Need a hint?"):
-                st.caption(STATUS_LABELS.get(status, status.title()))
-                if metadata.get("expires_at"):
-                    st.caption(f"Practice access ends {_expiry_label(metadata['expires_at'], meet)}")
-                if metadata.get("scenario_message"):
-                    st.info(str(metadata["scenario_message"]))
-                if feedback:
-                    st.caption(f"✓ {feedback}")
-                if hint:
-                    st.markdown("**Hint**")
-                    st.markdown(hint)
+            _render_hint(metadata, meet, status, instruction)
 
     if role != "admin":
         if role == "coach" and not is_hub and status in {"running", "paused"} and not metadata.get("expired"):

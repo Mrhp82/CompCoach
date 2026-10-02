@@ -22,7 +22,7 @@ def training_visible_revision(metadata: dict | None) -> str:
         return ""
     fields = (
         "meet_id", "kind", "status", "expired", "expires_at", "stage_index",
-        "stage_count", "stage_title", "instruction", "hint", "progress",
+        "stage_count", "stage_title", "instruction", "guide_instruction", "hint", "progress",
         "scenario_message", "last_feedback", "completed_runs", "last_completed_at",
     )
     visible = {key: metadata.get(key) for key in fields}

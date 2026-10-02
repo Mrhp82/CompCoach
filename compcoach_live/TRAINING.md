@@ -8,7 +8,7 @@ far avanzare i coach.
 
 1. Apri il tuo link Admin.
 2. Vai in **Setup → Training**. Se sei sulla Home, apri **Practice · coach training**.
-3. Scegli i coach invitati. Per aggiungerne uno, scrivi il nome nella tendina **Coaches taking part** e seleziona **Add**. Seleziona **7 days** o **14 days**.
+3. Seleziona **7 days** o **14 days**. Non serve preparare una lista di coach: ognuno inserisce il proprio nome quando entra.
 4. Premi **Activate autonomous practice**.
 5. Copia il **Coach practice link** nella sezione **Share** mostrata nella pagina e invialo ai coach. È distinto dal link della gara reale.
 
@@ -20,12 +20,16 @@ l'accesso alla pratica; non modifica la gara reale.
 
 ## Cosa fa ogni coach
 
-Il coach apre il link e sceglie il proprio nome. L'app apre automaticamente il
-suo percorso personale con atleti fittizi, colleghi virtuali e un coordinatore
-simulato. La scritta **TRAINING · Practice only** distingue l'esercitazione.
+Il coach apre il link comune, scrive il proprio nome in **Your name** e preme
+**Start my practice**. L'app apre un percorso personale nuovo con atleti
+fittizi, colleghi virtuali e un coordinatore simulato. Due persone che
+inseriscono lo stesso nome hanno comunque percorsi e progressi separati.
+Il titolo della pratica e la guida 🧪 distinguono l'esercitazione dalla gara.
 
-Un compito alla volta indica cosa fare usando i veri pulsanti di **My Group**
-e **Live**. **Need a hint?** aiuta quando il comando non è evidente. Non ci sono
+Una guida compatta resta fissa in alto anche scorrendo la pagina e indica il
+passaggio corrente e la prossima azione, usando i veri pulsanti di **My Group**
+e **Live**. **Need a hint?** contiene istruzioni complete, scenario, riscontro
+sulle azioni e scadenza dell'accesso. Non ci sono
 pulsanti fittizi per simulare vittorie o coperture: le azioni si salvano e
 modificano gli stessi dati operativi usati in gara, all'interno della pratica.
 
@@ -39,11 +43,28 @@ Esempi di situazioni simulate:
 
 - Il coach si segna con un atleta: un altro atleta di cui è responsabile viene chiamato. Dopo circa 15 secondi può intervenire un collega virtuale; in altre ripetizioni nessuno è libero e l'avviso resta aperto.
 - Il risultato libera il coach: dopo una breve attesa arriva una chiamata improvvisa Now, On deck oppure In the hole per un atleta con coach impegnato. Il coach può premere **I'll take over**, poi registrare la presenza fisica in pedana.
-- Il coordinatore simulato assegna un altro atleta al coach rimasto libero. Il nuovo incarico compare in **My Group**, anche quando riguarda un altro evento.
+- Il coordinatore simulato assegna un altro atleta al coach rimasto libero. Il nuovo incarico compare in **My Group**, anche quando riguarda un altro evento. Il coach preme **Accept assignment** per confermare la responsabilità; **I’m with [atleta]** registra invece l'arrivo fisico e avvia il timer di occupazione.
 - Una richiesta d'aiuto riceve una risposta virtuale; la chiamata successiva può avere una pedana diversa dalla precedente.
 
+Nei gironi, **Need help** serve per emergenze reali: per esempio diversi
+assalti già svolti senza assistenza o un atleta lasciato senza coaching che si
+sente abbandonato. Gli altri coach stanno già seguendo i propri gruppi. La
+lezione simulata presenta un'emergenza di questo tipo e insegna a rispondere
+con **I’m coming**.
+
+Quando il coach è fisicamente con un atleta, **My Group** mostra subito il
+nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **Won / Lost**
+sono nella stessa barra: il risultato si salva con un tap e libera il coach.
+Il pulsante **I’m with [atleta]** non compare più quando la presenza è già
+registrata. Le chiamate successive hanno priorità sugli atleti non ancora
+chiamati. Le vittorie in diretta fanno ruotare la coda; i gironi conclusi e
+gli atleti Out restano nelle sezioni dedicate.
+
 Ogni coach può entrare in un momento diverso. Chi arriva dopo comincia
-dall'inizio. Chi riapre il link riprende il proprio percorso. Al termine,
+dall'inizio. Conserva l'URL personale che si apre dopo l'ingresso: ricaricandolo
+o riaprendolo riprendi quel percorso. Il link comune, invece, permette di
+iniziare una pratica separata dopo aver inserito il nome, anche se era già
+stato usato. Al termine,
 **Practice again** ricomincia il suo esercizio con una nuova variante, senza
 azzerare quello degli altri.
 
@@ -80,12 +101,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.3.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.4.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.3.zip
+unzip -o CompCoach_Live_v0.10.4.zip
 cd compcoach_live
 bash launch.sh
 ```

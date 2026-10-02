@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+try:
+    from .assignment_notices import assignment_is_actionable
+except ImportError:
+    from assignment_notices import assignment_is_actionable
+
 NO_CHANGE = object()
 
 
@@ -403,6 +408,28 @@ class CompCoachDB:
                     version INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(meet_id, coach_name)
                 );
+
+                CREATE TABLE IF NOT EXISTS assignment_notices (
+                    id TEXT PRIMARY KEY,
+                    meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+                    coach_name TEXT NOT NULL,
+                    coach_key TEXT NOT NULL,
+                    phase TEXT NOT NULL CHECK (phase IN ('pools', 'de')),
+                    created_at TEXT NOT NULL,
+                    created_by TEXT NOT NULL DEFAULT '',
+                    accepted_at TEXT,
+                    accepted_by TEXT NOT NULL DEFAULT '',
+                    superseded_at TEXT,
+                    superseded_by TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_assignment_notices_meet_coach
+                    ON assignment_notices(meet_id, coach_key, superseded_at, accepted_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_notices_current
+                    ON assignment_notices(athlete_id, coach_key)
+                    WHERE superseded_at IS NULL;
 
                 CREATE TABLE IF NOT EXISTS coaches (
                     id TEXT PRIMARY KEY,
@@ -1363,6 +1390,67 @@ class CompCoachDB:
             pod=pod, coaches=assigned_coaches(new) if phase == "de" else [],
             actor=actor, source=source,
         )
+        cls._sync_athlete_assignment_notices(
+            conn, current=current, new=new, actor=actor, source=source,
+        )
+
+    @classmethod
+    def _sync_athlete_assignment_notices(
+        cls, conn: sqlite3.Connection, *, current: Mapping[str, Any] | None,
+        new: Mapping[str, Any], actor: str, source: str,
+    ) -> None:
+        """Maintain one receipt per added planned coach inside the assignment write.
+
+        Moving a coach from main to side does not add an athlete to their group.
+        Removal/reassignment and a new phase do create a fresh receipt. Calls,
+        physical coverage and repeated imports preserve the existing receipt.
+        Legacy records are not retroactively announced on server restart.
+        """
+
+        if source == "legacy_snapshot":
+            return
+        old = current or {}
+        old_actionable = assignment_is_actionable(old) if current else False
+        new_actionable = assignment_is_actionable(new)
+        old_names = {_normalize_name(name): name for name in assigned_coaches(old)}
+        new_names = {_normalize_name(name): name for name in assigned_coaches(new)}
+        phase_changed = bool(current) and old.get("phase") != new.get("phase")
+        if (old_names.keys() == new_names.keys() and not phase_changed
+                and old_actionable == new_actionable):
+            return
+        rows = conn.execute(
+            "SELECT * FROM assignment_notices WHERE athlete_id = ? AND superseded_at IS NULL",
+            (new["id"],),
+        ).fetchall()
+        now = utc_now()
+        retained: set[str] = set()
+        for row in rows:
+            key = str(row["coach_key"])
+            if new_actionable and not phase_changed and key in new_names:
+                retained.add(key)
+                continue
+            conn.execute(
+                "UPDATE assignment_notices SET superseded_at = ?, superseded_by = ?, "
+                "version = version + 1 WHERE id = ? AND superseded_at IS NULL",
+                (now, actor or "System", row["id"]),
+            )
+        if not new_actionable:
+            return
+        # Unchanged coaches in a pre-notification database remain silent.
+        added_keys = set(new_names) - (set(old_names) if old_actionable and not phase_changed else set())
+        if not added_keys:
+            return
+        meet = cls._meet_for_event(conn, str(new["event_id"]))
+        for key, name in new_names.items():
+            if key not in added_keys or key in retained:
+                continue
+            conn.execute(
+                "INSERT INTO assignment_notices (id, meet_id, event_id, athlete_id, "
+                "coach_name, coach_key, phase, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (uuid4().hex, meet["id"], new["event_id"], new["id"], name, key,
+                 new["phase"], now, actor or "System"),
+            )
 
     @staticmethod
     def _assert_training_access(conn: sqlite3.Connection, meet_id: str) -> None:
@@ -2327,6 +2415,8 @@ class CompCoachDB:
                  "coach_name", "is_available", "available_since", "updated_at",
                  "updated_by", "version",
              )),
+            ("assignment_notice", "assignment_notices AS record JOIN target "
+             "ON target.id = record.meet_id", ("id", "version")),
             ("presence", "day_coach_presence AS record JOIN target "
              "ON target.id = record.meet_id", (
                  "coach_id", "presence_status", "home_event_id", "updated_at", "updated_by",
@@ -3933,6 +4023,11 @@ class CompCoachDB:
             """,
             (new_name, coach_id),
         )
+        conn.execute(
+            "UPDATE assignment_notices SET coach_name = ?, coach_key = ?, "
+            "version = version + 1 WHERE coach_key = ? AND superseded_at IS NULL",
+            (new_name, _normalize_name(new_name), old_key),
+        )
 
         # coach_name is part of this table's primary key.  Reinsert under the
         # new key rather than recreating availability: state, timestamps and
@@ -4292,6 +4387,137 @@ class CompCoachDB:
             }
             for row in rows
         ]
+
+    def list_assignment_notices(
+        self, meet_id: str, coach_name: str | None = None, *,
+        pending_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return durable receipts for current, unfinished planned assignments.
+
+        This read never creates notices. Current call/strip details are joined
+        so a pending receipt follows a coordinator's latest field information.
+        ``pending_only=False`` also includes acknowledged current assignments.
+        """
+
+        sql = """
+            SELECT notice.*, athlete.name AS athlete_name,
+                athlete.phase AS athlete_phase, athlete.pod, athlete.pool_no,
+                athlete.source_strip, athlete.time_text, athlete.live_location,
+                athlete.call_status, athlete.reported_at, athlete.covered_by,
+                athlete.covered_at, athlete.takeover_coach,
+                athlete.active_state, athlete.participation_status,
+                athlete.pool_result_at, athlete.version AS athlete_version,
+                athlete.main_coach, athlete.side_coach, athlete.de_coaches_json,
+                event.name AS event_name
+            FROM assignment_notices AS notice
+            JOIN athletes AS athlete ON athlete.id = notice.athlete_id
+            JOIN events AS event ON event.id = notice.event_id
+            JOIN meet_events AS membership ON membership.event_id = notice.event_id
+                AND membership.meet_id = notice.meet_id
+            WHERE notice.meet_id = ? AND notice.superseded_at IS NULL
+        """
+        params: list[Any] = [meet_id]
+        if coach_name is not None:
+            sql += " AND notice.coach_key = ?"
+            params.append(_normalize_name(coach_name))
+        if pending_only:
+            sql += " AND notice.accepted_at IS NULL"
+        sql += " ORDER BY notice.created_at DESC, notice.id"
+        with self._connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        result = []
+        for row in rows:
+            notice = dict(row)
+            athlete = {
+                key: notice[key] for key in (
+                    "main_coach", "side_coach", "de_coaches_json",
+                    "active_state", "participation_status", "pool_result_at",
+                )
+            }
+            athlete["phase"] = notice["athlete_phase"]
+            if (notice["phase"] != athlete["phase"]
+                    or not assignment_is_actionable(athlete)
+                    or notice["coach_key"] not in {
+                        _normalize_name(name) for name in assigned_coaches(athlete)
+                    }):
+                continue
+            notice["assigned_by"] = notice["created_by"]
+            notice["actual_strip"] = notice["live_location"]
+            notice["assignment_status"] = "accepted" if notice["accepted_at"] else "pending"
+            result.append(notice)
+        return result
+
+    def accept_assignment_notice(
+        self, meet_id: str, notice_id: str, coach_name: str, *,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        """Acknowledge responsibility without claiming physical bout coverage.
+
+        The receipt ID identifies this precise assignment, so an old phone
+        cannot acknowledge a removed/re-added assignment. Repeated acceptance
+        is idempotent and does not reset later explicit availability.
+        """
+
+        coach_key = _normalize_name(coach_name)
+        clean_actor = " ".join(str(actor if actor is not None else coach_name).split())
+        if not coach_key or _normalize_name(clean_actor) != coach_key:
+            raise CompCoachError("Only the assigned coach can accept this assignment.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = self._assert_meet_open(conn, meet_id)
+            if meet["ended_at"] or meet["day_status"] != "active":
+                raise EventLockedError("This competition day is not active and cannot accept assignments.")
+            notice_row = conn.execute(
+                "SELECT * FROM assignment_notices WHERE id = ? AND meet_id = ?",
+                (notice_id, meet_id),
+            ).fetchone()
+            if notice_row is None:
+                raise ConcurrentUpdateError("This assignment is no longer available. Refresh your group.")
+            notice = dict(notice_row)
+            if notice["coach_key"] != coach_key:
+                raise CompCoachError("Only the assigned coach can accept this assignment.")
+            self._assert_open(conn, str(notice["event_id"]))
+            athlete_row = conn.execute(
+                "SELECT athletes.* FROM athletes JOIN meet_events "
+                "ON meet_events.event_id = athletes.event_id "
+                "WHERE athletes.id = ? AND athletes.event_id = ? AND meet_events.meet_id = ?",
+                (notice["athlete_id"], notice["event_id"], meet_id),
+            ).fetchone()
+            athlete = dict(athlete_row) if athlete_row else {}
+            if (notice["superseded_at"] or not athlete
+                    or notice["phase"] != athlete.get("phase")
+                    or not assignment_is_actionable(athlete)
+                    or coach_key not in {_normalize_name(name) for name in assigned_coaches(athlete)}):
+                raise ConcurrentUpdateError("This assignment changed or the athlete has finished. Refresh your group.")
+            active_names = {
+                _normalize_name(name): name for name in _coach_names(_load(meet["active_coaches_json"], []))
+            }
+            if coach_key not in active_names:
+                raise CompCoachError("You are no longer an active coach for this competition.")
+            if not notice["accepted_at"]:
+                now = utc_now()
+                conn.execute(
+                    "UPDATE assignment_notices SET accepted_at = ?, accepted_by = ?, "
+                    "version = version + 1 WHERE id = ? AND accepted_at IS NULL "
+                    "AND superseded_at IS NULL",
+                    (now, active_names[coach_key], notice_id),
+                )
+                self._clear_available_coaches(
+                    conn, meet_id, [active_names[coach_key]], active_names[coach_key],
+                )
+                notice = dict(conn.execute(
+                    "SELECT * FROM assignment_notices WHERE id = ?", (notice_id,),
+                ).fetchone())
+                self._log_action(
+                    conn, event_id=str(notice["event_id"]),
+                    athlete_id=str(notice["athlete_id"]), action="assignment_accepted",
+                    actor=active_names[coach_key], previous=None,
+                    new={"assignment_notice_id": notice_id, "coach_name": active_names[coach_key],
+                         "athlete_name": athlete["name"], "accepted_at": now},
+                    version_after=None,
+                )
+            conn.commit()
+        return notice
 
     def list_assignment_history(
         self,

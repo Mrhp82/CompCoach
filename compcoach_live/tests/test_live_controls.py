@@ -266,8 +266,9 @@ def test_republishing_same_coach_location_does_not_reset_busy_timer(tmp_path):
     app.text_input[0].input("C3")
     _button(app, "I’m with CASEY Athlete").click().run()
     before = db.get_athlete(event["id"], athlete["id"])
+    assert not any(button.label == "I’m with CASEY Athlete" for button in app.button)
     app.text_input[0].input("J4")
-    _button(app, "I’m with CASEY Athlete").click().run()
+    _button(app, "Now").click().run()
     after = db.get_athlete(event["id"], athlete["id"])
     assert after["covered_at"] == before["covered_at"]
     assert after["live_location"] == "J4" and after["covered_by"] == "Alex"

@@ -14,6 +14,7 @@ import os
 import re
 import time
 from functools import wraps
+from uuid import uuid4
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 try:
     from compcoach_live.asset_store import AssetStoreError
+    from compcoach_live.assignment_notices import assignment_notice_details
     from compcoach_live.attendance_controls import (
         render_absent_pool_athletes,
         render_pool_absence_control,
@@ -65,6 +67,7 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from asset_store import AssetStoreError
+    from assignment_notices import assignment_notice_details
     from attendance_controls import (
         render_absent_pool_athletes,
         render_pool_absence_control,
@@ -99,7 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.3"
+APP_VERSION = "0.10.4"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -198,6 +201,8 @@ st.markdown(
       .cc-availability-on {border-color:#75e0a7; background:#ecfdf3;}
       .cc-availability-title {font-weight:900; color:#101828;}
       .cc-availability-meta {font-size:.8rem; color:#667085; margin-top:.12rem;}
+      .cc-new-assignment {font-size:1.05rem; font-weight:850; color:#3538cd;}
+      .cc-assignment-name {font-size:1.12rem; font-weight:850; margin:.2rem 0;}
       .cc-coach-chips {display:flex; gap:.35rem; flex-wrap:wrap; margin:.4rem 0 .75rem;}
       .cc-coach-chip {border-radius:999px; padding:.28rem .55rem; font-size:.78rem;
                       font-weight:850; border:1px solid #d0d5dd; background:#f8fafc;
@@ -462,10 +467,17 @@ def operational_view_athletes(athletes: list[dict]) -> list[dict]:
     visible. Timed Pool rows are visible only for the event's current wave.
     """
 
-    operational = [row for row in athletes if is_operational_athlete(row)]
+    return visible_pool_wave_rows(
+        [row for row in athletes if is_operational_athlete(row)]
+    )
+
+
+def visible_pool_wave_rows(rows: list[dict]) -> list[dict]:
+    """Keep athlete cards and assignment notices on the same visible Pool wave."""
+
     timed_event_ids = {
         str(row.get("event_id") or "")
-        for row in operational
+        for row in rows
         if row.get("phase") == "pools" and str(row.get("time_text") or "").strip()
     }
     visible_by_event: dict[str, set[str] | None] = {}
@@ -482,7 +494,7 @@ def operational_view_athletes(athletes: list[dict]) -> list[dict]:
         )
 
     filtered: list[dict] = []
-    for row in operational:
+    for row in rows:
         time_text = str(row.get("time_text") or "").strip()
         if row.get("phase") != "pools" or not time_text:
             filtered.append(row)
@@ -2397,6 +2409,8 @@ def render_athlete_card(
             return
 
         if personal and writable:
+            if athlete.get("phase") == "pools":
+                st.caption("Pools: use Need help only for a real emergency, such as several uncovered bouts or an athlete left without support. All coaches are busy; use it sparingly.")
             if athlete.get("help_requested_at"):
                 st.caption("🚨 Help request active — status is shown at the top of the board.")
             elif st.button(
@@ -2504,6 +2518,43 @@ def is_de_advanced(athlete: dict) -> bool:
     return athlete.get("phase") == "de" and is_operational_athlete(athlete) and bool(athlete.get("de_awaiting_next"))
 
 
+def de_result_snapshot(athlete: dict, bouts: list[dict]) -> dict:
+    pending = next((
+        bout for bout in bouts if bout["status"] == "pending"
+        and athlete["id"] in {bout["athlete_a_id"], bout["athlete_b_id"]}
+    ), None)
+    opponent = (
+        pending["athlete_b"] if pending and pending["athlete_a_id"] == athlete["id"]
+        else pending["athlete_a"] if pending else None
+    )
+    return {
+        "version": athlete["version"],
+        "bout_id": pending["id"] if pending else "",
+        "bout_version": pending["version"] if pending else None,
+        "opponent_version": opponent["version"] if opponent else None,
+    }
+
+
+def render_current_bout_actions(meet: dict, actor: str, athlete: dict) -> None:
+    """Finish physical coverage from the personal status bar, in one tap."""
+    if athlete.get("phase") != "de" or athlete.get("covered_by") != actor:
+        return
+    if not is_operational_athlete(athlete):
+        return
+    snapshot = de_result_snapshot(athlete, list_de_bouts(db, athlete["event_id"]))
+    st.caption(f"{athlete_event_label(athlete)} · Record this bout to finish coverage")
+    won, lost = st.columns(2)
+    for column, outcome in ((won, "won"), (lost, "lost")):
+        with column:
+            st.button(
+                outcome.title(), key=f"current_{outcome}_{athlete['id']}",
+                width="stretch", type="primary" if outcome == "won" else "secondary",
+                disabled=meet.get("status") != "open",
+                on_click=apply_de_result_snapshot,
+                args=(athlete["event_id"], athlete["id"], outcome, actor, snapshot),
+            )
+
+
 def apply_de_result_snapshot(event_id, athlete_id, outcome, actor, snapshot):
     try:
         if outcome == "bye":
@@ -2528,14 +2579,40 @@ def consume_de_fast_notice():
         (st.success if notice[0] else st.error)(notice[1])
 
 
-def render_de_wheel(event, role, actor, athletes, event_by_id, *, personal=False, key_prefix="wheel", bouts_by_event=None):
+def render_de_wheel(event, role, actor, athletes, event_by_id, *, personal=False, key_prefix="wheel", bouts_by_event=None, prioritize_calls=False):
     rows = [row for row in athletes if row.get("phase") == "de" and is_operational_athlete(row)]
     if not rows:
         return
     st.markdown("### Direct Elimination · live queue")
-    st.caption("Results move to the end of the queue. Pod is the assignment reference; actual strip and call are updated for each bout.")
+    st.caption("Live calls come first. Results rotate the waiting queue; pod and actual bout strip stay separate." if prioritize_calls else "Results move to the end of the queue. Pod is the assignment reference; actual strip and call are updated for each bout.")
     ordered = ordered_de_athletes(rows)
     coach_states = db.list_coach_availability(event["id"])
+    covered = []
+    if prioritize_calls:
+        reserved, urgent, verify, waiting, covered = [], [], [], [], []
+        for row in ordered:
+            if row.get("covered_by") or (row.get("takeover_coach") and row["takeover_coach"] != actor):
+                covered.append(row)
+            elif row.get("takeover_coach") == actor:
+                reserved.append(row)
+            elif row.get("call_status") != "waiting":
+                (verify if is_stale(row) else urgent).append(row)
+            else:
+                waiting.append(row)
+        for heading, group in (
+            ("Your accepted takeovers", reserved),
+            ("Next calls · Now → On deck → In the hole", sorted(urgent, key=personal_athlete_sort_key)),
+            ("Calls to verify", sorted(verify, key=personal_athlete_sort_key)),
+        ):
+            if group:
+                st.markdown(f"**{heading} · {len(group)}**")
+                for row in group:
+                    render_athlete_card(event_by_id[row["event_id"]], role, actor, row,
+                                        personal=personal, afm_bouts=(bouts_by_event or {}).get(row["event_id"]),
+                                        coach_states=coach_states, meet_state=event)
+        ordered = waiting
+        if waiting:
+            st.markdown(f"**Not called yet · {len(waiting)}**")
     last_round = None
     for athlete in ordered:
         rounds = int(athlete.get("de_rounds_passed", int(athlete.get("de_wins") or 0) + int(athlete.get("de_byes") or 0)))
@@ -2548,6 +2625,12 @@ def render_de_wheel(event, role, actor, athletes, event_by_id, *, personal=False
                             personal=personal,
                             afm_bouts=(bouts_by_event or {}).get(athlete["event_id"]),
                             coach_states=coach_states, meet_state=event)
+    if covered:
+        with st.expander(f"Covered / taken by a colleague · {len(covered)}", expanded=False):
+            for row in covered:
+                render_athlete_card(event_by_id[row["event_id"]], role, actor, row,
+                                    personal=personal, afm_bouts=(bouts_by_event or {}).get(row["event_id"]),
+                                    coach_states=coach_states, meet_state=event)
 
 
 def render_live_board(event: dict, role: str, actor: str) -> None:
@@ -2568,6 +2651,9 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
     statuses = db.list_coach_availability(event["id"])
     available_count = sum(bool(row.get("is_available")) for row in statuses)
     st.markdown("### Live")
+    current_status = next((row for row in statuses if row["coach_name"] == actor), {})
+    if current_status.get("is_busy"):
+        render_availability_control(event, actor, athletes, compact=True)
     st.markdown(
         f"<div class='cc-summary'><span class='cc-now'>{len(current_needs)} need coverage</span> · "
         f"<span class='cc-covered'>{available_count} coach{'es' if available_count != 1 else ''} available</span> · "
@@ -2575,12 +2661,14 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"{len(stale_needs)} calls to verify · {len(waiting)} waiting · {len(out)} out")
+    if role in {"admin", "coordinator"}:
+        render_assignment_confirmations(event)
     views = ["Uncovered", "Needs Coach", "Covered Now", "No Current Call", "Out"]
     view = select_nav(views, f"live_view_{event['id']}_{role}")
     migrated_panel = st.session_state.get(f"live_migrated_panel_{event['id']}_{role}")
     panel_key = f"live_panel_{event['id']}_{role}"
     with st.expander("Coaches", expanded=False, key=f"{panel_key}_coaches", type="compact"):
-        if actor in event["active_coaches"]:
+        if actor in event["active_coaches"] and not current_status.get("is_busy"):
             render_availability_control(event, actor, athletes, compact=True)
         render_coach_availability_summary(event, role, actor, athletes, statuses=statuses)
         render_available_coach_deploy(event, role, actor, events, athletes, statuses)
@@ -2716,12 +2804,23 @@ def render_availability_control(
     else:
         state = "⚪ Ready when you are"
         meta = "No unfinished duty is visible. Tap below to make yourself available to help."
-    st.markdown(
-        f"<div class='cc-availability{state_class}'>"
-        f"<div class='cc-availability-title'>{state}</div>"
-        f"<div class='cc-availability-meta'>{esc(meta)}</div></div>",
-        unsafe_allow_html=True,
-    )
+    if busy:
+        current = next((row for row in athletes if row["id"] == status.get("busy_athlete_id")), None)
+        with st.container(border=True):
+            st.markdown(
+                f"<div class='cc-availability-title'>{state}</div>"
+                f"<div class='cc-availability-meta'>{esc(meta)}</div>",
+                unsafe_allow_html=True,
+            )
+            if current:
+                render_current_bout_actions(event, actor, current)
+    else:
+        st.markdown(
+            f"<div class='cc-availability{state_class}'>"
+            f"<div class='cc-availability-title'>{state}</div>"
+            f"<div class='cc-availability-meta'>{esc(meta)}</div></div>",
+            unsafe_allow_html=True,
+        )
 
     writable = event["status"] == "open"
     if busy or takeover_count:
@@ -2836,6 +2935,10 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
 
     st.markdown("### My group")
     render_availability_control(event, actor, athletes)
+    render_assignment_notice_panel(event, role, actor)
+    render_busy_coach_board(db, event, event_by_id, athletes, role, actor, key_prefix="global")
+    render_help_alerts(event, role, actor, athletes)
+    current_de = [row for row in active_mine if row.get("phase") == "de" and row.get("covered_by") == actor]
     completed_label = (
         "1 completed pool"
         if len(completed_pools) == 1
@@ -2851,7 +2954,7 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
         st.info("No athletes are assigned to you right now. Open Live → All assignments to see the full staff plan.")
         return
 
-    visible_event_ids = {row["event_id"] for row in working_mine}
+    visible_event_ids = {row["event_id"] for row in working_mine if row.get("phase") == "pools"}
     ordered_events = sorted(
         [child for child in events if child["id"] in visible_event_ids],
         key=lambda child: (
@@ -2859,13 +2962,6 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
             int(child.get("sort_order") or 0),
         ),
     )
-    if len(ordered_events) > 1:
-        st.warning(
-            "You are currently connected to more than one event: "
-            + ", ".join(child["name"] for child in ordered_events)
-            + "."
-        )
-
     for child in ordered_events:
         child_rows = sorted(
             [row for row in working_mine if row["event_id"] == child["id"] and row["phase"] == "pools"],
@@ -2900,6 +2996,18 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
                     personal=True,
                     afm_bouts=bouts_by_event.get(athlete["event_id"], []),
                 )
+
+    queued_de = [row for row in active_mine if row not in current_de]
+    render_de_wheel(event, role, actor, queued_de, event_by_id, personal=True,
+                    key_prefix="personal", bouts_by_event=bouts_by_event, prioritize_calls=True)
+    if current_de:
+        with st.expander("Current bout details", expanded=False):
+            for athlete in current_de:
+                render_athlete_card(event_by_id[athlete["event_id"]], role, actor, athlete,
+                                    personal=True, afm_bouts=bouts_by_event.get(athlete["event_id"], []))
+    for child in events:
+        if any(row["phase"] == "de" and row["event_id"] == child["id"] for row in active_mine):
+            render_de_bouts(db, child, actor, key_prefix="personal")
 
     if completed_pools:
         completed_event_ids = {row["event_id"] for row in completed_pools}
@@ -2946,11 +3054,47 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
     )
 
 
-    for child in events:
-        if any(row["phase"] == "de" and row["event_id"] == child["id"] for row in active_mine):
-            render_de_bouts(db, child, actor, key_prefix="personal")
-    render_de_wheel(event, role, actor, active_mine, event_by_id, personal=True, key_prefix="personal", bouts_by_event=bouts_by_event)
     render_de_result_corrections(db, event, actor, athletes, event_by_id, key_prefix="personal")
+
+
+def render_assignment_notice_panel(meet: dict, role: str, actor: str) -> None:
+    if actor not in meet.get("active_coaches", []) or meet.get("status") != "open":
+        return
+    notices = visible_pool_wave_rows(db.list_assignment_notices(meet["id"], actor))
+    if not notices:
+        return
+    with st.container(border=True):
+        label = "New assignment" if len(notices) == 1 else f"{len(notices)} new assignments"
+        st.markdown(f"<div class='cc-new-assignment'>🆕 {label} · confirmation needed</div>", unsafe_allow_html=True)
+        st.caption("Accept to confirm responsibility. Use I’m with… when you arrive at the bout.")
+        for notice in sorted(notices, key=lambda row: ({"now": 0, "on_deck": 1, "in_hole": 2}.get(row.get("call_status"), 3), row["created_at"])):
+            st.markdown(f"<div class='cc-assignment-name'>{esc(notice['athlete_name'])}</div>", unsafe_allow_html=True)
+            call = CALL_LABELS.get(notice.get("call_status"), "Not called yet")
+            st.markdown(f"**{esc(call)}** · {esc(assignment_notice_details(notice))}")
+            st.caption(f"Assigned by {notice.get('assigned_by') or 'Coordinator'} · {age_text(notice.get('created_at'))}")
+            if st.button("Accept assignment", key=f"accept_assignment_{notice['id']}", width="stretch", type="primary"):
+                try:
+                    db.accept_assignment_notice(meet["id"], notice["id"], actor, actor=actor)
+                    st.toast(f"Assignment accepted: {notice['athlete_name']}.")
+                    st.rerun(scope="app")
+                except CompCoachError as exc:
+                    show_error(exc)
+
+
+def render_assignment_confirmations(meet: dict) -> None:
+    notices = db.list_assignment_notices(meet["id"], pending_only=False)
+    with st.expander("Assignment confirmations", expanded=False):
+        pending = sum(not row.get("accepted_at") for row in notices)
+        st.caption(f"{pending} awaiting acceptance · {len(notices) - pending} accepted")
+        if not notices:
+            st.info("No current assignment confirmations.")
+        for notice in sorted(notices, key=lambda row: (bool(row.get("accepted_at")), row["created_at"])):
+            accepted = bool(notice.get("accepted_at"))
+            state = "✅ Accepted" if accepted else "🟠 Awaiting acceptance"
+            st.markdown(f"**{esc(notice['athlete_name'])} → {esc(notice['coach_name'])}** · {state}")
+            st.caption(assignment_notice_details(notice))
+            if accepted:
+                st.caption(f"Accepted by {notice.get('accepted_by')} · {age_text(notice.get('accepted_at'))}")
 
 
 def assignment_details(athlete: dict) -> str:
@@ -3671,7 +3815,7 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
     if practice:
         return "\n".join([
             "🧪 *COMPCOACH PRACTICE*", "",
-            "Open the link and choose your name. Your own practice course starts or resumes automatically.",
+            "Open the link, enter your name and tap Start my practice. You get your own course from the beginning, even if someone else uses the same name.",
             "The app plays the coordinator and virtual colleagues. Practice pools, live calls, coverage, help and DE results using the normal controls.",
             "No Admin supervision needed. You can practice again after finishing.",
             f"Practice access ends: {practice.get('expires_at', '')}", "", coach_link,
@@ -3832,6 +3976,7 @@ def render_share(event: dict) -> None:
 
 
 ACTION_LABELS = {
+    "assignment_accepted": "accepted assignment",
     "live_update": "updated live call",
     "claim": "took coverage",
     "release": "released coverage",
@@ -4371,6 +4516,31 @@ def render_admin_setup(event: dict, actor: str, *, scheduled_day: bool = False) 
         render_settings_hub(event, actor)
 
 
+def render_training_entry(event: dict, metadata: dict) -> None:
+    st.subheader("Start your practice")
+    st.caption("Enter your name. You get your own course from the beginning, even if someone else uses the same name.")
+    if metadata.get("expired") or metadata.get("status") not in {"running", "paused"}:
+        st.info("This practice period has ended. Ask the Admin for a new practice link.")
+        return
+    identity_key = f"training_entry_identity_{event['id']}"
+    if identity_key not in st.session_state:
+        st.session_state[identity_key] = uuid4().hex
+    with st.form(f"training_entry_{event['id']}"):
+        name = st.text_input("Your name", key=f"training_entry_name_{event['id']}", max_chars=80)
+        submitted = st.form_submit_button("Start my practice", type="primary", width="stretch")
+    if submitted:
+        try:
+            own = join_training(db, event["id"], name, participant_key=st.session_state[identity_key])
+            db.invalidate()
+            own_metadata = get_training(db, own["id"])
+            actor = str((own_metadata or {}).get("learner") or own["active_coaches"][0])
+            st.session_state.pop(identity_key, None)
+            set_open_event(own, "coach", actor=actor)
+        except (CompCoachError, TypeError, ValueError) as exc:
+            show_error(exc)
+    st.caption("Keep your personal practice URL to resume later. Reopening the common link lets you start a separate course.")
+
+
 def render_event(event: dict, role: str) -> None:
     if st.session_state.pop(f"training_reset_view_{event['id']}_{role}", False):
         clear_actor_state(event["id"], role)
@@ -4438,19 +4608,16 @@ def render_event(event: dict, role: str) -> None:
         )
         return
 
+    if practice and role == "coach" and (practice.get("is_hub") or practice.get("kind") == "hub"):
+        render_training_entry(event, practice)
+        return
     actor = require_actor(event, role)
     if not actor:
         return
     if practice:
         training_fragment(event["id"], role, actor, practice)
         if practice.get("is_hub") or practice.get("kind") == "hub":
-            if role == "coach" and practice.get("status") == "running" and not practice.get("expired"):
-                try:
-                    learner_meet = join_training(db, event["id"], actor)
-                    set_open_event(learner_meet, "coach", actor=actor)
-                except CompCoachError as exc:
-                    show_error(exc)
-            elif role == "admin":
+            if role == "admin":
                 render_share(event)
                 source = db.get_meet(str(practice.get("source_meet_id") or ""))
                 if source and st.button("← Back to competition", key=f"training_source_{event['id']}", width="stretch"):
@@ -4498,15 +4665,16 @@ def render_event(event: dict, role: str) -> None:
 
     phase_fragment(event["id"], role, actor)
     available_coaches_fragment(event["id"])
-    busy_coaches_fragment(event["id"], role, actor)
-    help_fragment(event["id"], role, actor)
     migrate_live_navigation(event["id"], role)
 
+    nav_options = ["My Group", "Live", "Setup", "Share"] if role == "admin" else ["Live", "Activity"] if role == "coordinator" else ["My Group", "Live"]
+    nav = select_nav(nav_options, f"{role}_nav_{event['id']}")
+    if nav != "My Group":
+        render_assignment_notice_panel(event, role, actor)
+        busy_coaches_fragment(event["id"], role, actor)
+        help_fragment(event["id"], role, actor)
+
     if role == "admin":
-        nav = select_nav(
-            ["My Group", "Live", "Setup", "Share"],
-            f"admin_nav_{event['id']}",
-        )
         if nav == "My Group":
             my_group_fragment(event["id"], role, actor)
             render_quick_update(event, role, actor)
@@ -4517,19 +4685,11 @@ def render_event(event: dict, role: str) -> None:
         else:
             render_admin_setup(event, actor)
     elif role == "coordinator":
-        nav = select_nav(
-            ["Live", "Activity"],
-            f"coordinator_nav_{event['id']}",
-        )
         if nav == "Live":
             render_live(event, role, actor)
         else:
             render_activity(event, actor, role)
     else:
-        nav = select_nav(
-            ["My Group", "Live"],
-            f"coach_nav_{event['id']}",
-        )
         if nav == "My Group":
             my_group_fragment(event["id"], role, actor)
             render_quick_update(event, role, actor)

@@ -116,21 +116,20 @@ def _text(app):
     ])
 
 
-def test_activation_passes_duration_and_deduplicated_names_without_touching_source(practice):
+def test_activation_opens_free_name_entry_without_touching_source(practice):
     path, database, source, engine = practice
     source_before = database.get_meet(source["id"])
     app = AppTest.from_function(_render_start, args=(path, source["id"])).run()
     assert not app.exception
-    assert app.multiselect[0].value == ["Morgan", "Taylor"]
+    assert not app.multiselect and not app.text_area
     assert app.radio[0].value == 7
     app.radio[0].set_value(14)
-    app.text_area[0].set_value("Morgan\nRiley\nRILEY, Casey")
     _button(app, "Activate autonomous practice").click().run()
 
     assert not app.exception
     assert engine.starts == [{
         "source_meet_id": source["id"],
-        "coach_names": ["Morgan", "Taylor", "Riley", "Casey"],
+        "coach_names": [], "open_entry": True,
         "actor": "Avery", "duration_days": 14,
     }]
     assert app.session_state["training_test_opened"] == "practice-id"
@@ -138,43 +137,44 @@ def test_activation_passes_duration_and_deduplicated_names_without_touching_sour
     assert "practice link" in _text(app)
 
 
-def test_empty_practice_roster_stays_on_setup_with_clear_error(practice):
+def test_empty_real_roster_does_not_block_autonomous_practice(practice):
     path, _, source, engine = practice
     app = AppTest.from_function(_render_start, args=(path, source["id"])).run()
-    app.multiselect[0].set_value([])
+    assert not app.multiselect
     _button(app, "Activate autonomous practice").click().run()
     assert not app.exception
-    assert engine.starts == []
-    assert "Choose at least one coach" in _text(app)
+    assert engine.starts[0]["coach_names"] == []
+    assert engine.starts[0]["open_entry"] is True
+    assert not app.error
 
 
-def test_home_practice_can_use_directory_without_existing_day(practice):
+def test_home_practice_uses_free_name_entry_without_existing_day(practice):
     path, _, _, engine = practice
     app = AppTest.from_function(_render_start, args=(path, None)).run()
     _button(app, "Activate autonomous practice").click().run()
     assert not app.exception
     assert engine.starts[0]["source_meet_id"] is None
-    assert engine.starts[0]["coach_names"] == ["Avery", "Morgan", "Taylor"]
+    assert engine.starts[0]["coach_names"] == []
+    assert engine.starts[0]["open_entry"] is True
 
 
-def test_practice_dropdown_accepts_new_names_and_reuses_directory_spelling(practice):
+def test_practice_activation_does_not_read_or_modify_real_coach_directory(practice):
     path, database, source, engine = practice
     directory_before = database.list_coaches()
     source_before = database.get_meet(source["id"])
     app = AppTest.from_function(_render_start, args=(path, source["id"])).run()
     assert not app.exception
-    assert app.multiselect[0].proto.accept_new_options
-    app.multiselect[0].set_value(["  MORGAN  ", "New   Coach", "new coach"])
-    app.text_area[0].set_value(" NEW COACH, Taylor ")
+    assert not app.multiselect and not app.text_area
     _button(app, "Activate autonomous practice").click().run()
 
     assert not app.exception
-    assert engine.starts[0]["coach_names"] == ["Morgan", "New Coach", "Taylor"]
+    assert engine.starts[0]["coach_names"] == []
+    assert engine.starts[0]["open_entry"] is True
     assert database.list_coaches() == directory_before
     assert database.get_meet(source["id"]) == source_before
 
 
-def test_new_install_offers_fictional_names_without_modifying_directory(tmp_path, monkeypatch):
+def test_new_install_opens_free_practice_without_preselected_names(tmp_path, monkeypatch):
     from compcoach_live import training_ui
 
     path = tmp_path / "first-practice.db"
@@ -183,13 +183,12 @@ def test_new_install_offers_fictional_names_without_modifying_directory(tmp_path
     monkeypatch.setattr(training_ui, "training", engine)
     app = AppTest.from_function(_render_start, args=(str(path), None)).run()
     assert not app.exception
-    assert app.multiselect[0].value == ["Morgan", "Taylor", "Riley", "Casey"]
+    assert not app.multiselect and not app.text_area
     assert database.list_coaches() == []
-    assert app.multiselect[0].proto.accept_new_options
-    app.multiselect[0].set_value(["New   Practice Coach"])
     _button(app, "Activate autonomous practice").click().run()
     assert not app.exception
-    assert engine.starts[0]["coach_names"] == ["New Practice Coach"]
+    assert engine.starts[0]["coach_names"] == []
+    assert engine.starts[0]["open_entry"] is True
     assert database.list_coaches() == []
 
 
@@ -198,8 +197,12 @@ def test_coach_guidance_uses_real_workflow_and_hides_admin_controls(practice, ro
     path, _, source, _ = practice
     app = AppTest.from_function(_render_panel, args=(path, source["id"], role, "Morgan")).run()
     assert not app.exception
-    assert "TRAINING · Practice only" in _text(app)
-    assert "Step 4 of 16 · Finish your pool" in _text(app)
+    if role == "coach":
+        assert 'class="cc-practice-guide"' in _text(app)
+        assert "Step 4 of 16" in _text(app) and "Finish your pool" in _text(app)
+    else:
+        assert "TRAINING · Practice only" in _text(app)
+        assert "Step 4 of 16 · Finish your pool" in _text(app)
     assert "Morgan: open My Group and enter 3 wins / 3 losses." in _text(app)
     assert [button.label for button in app.button] == (["Restart my practice"] if role == "coach" else [])
     assert not any(expander.label == "Practice management" for expander in app.expander)
@@ -232,7 +235,7 @@ def test_completed_coach_can_restart_own_practice_with_same_link(practice):
     assert not app.exception
     assert engine.restarts == [("practice-id", "Morgan")]
     assert app.session_state["training_test_opened"] == "practice-id"
-    assert "Step 1 of 16 · Meet your group" in _text(app)
+    assert "Step 1 of 16" in _text(app) and "Meet your group" in _text(app)
     # AppTest can retain the previous button tree after a full rerun. A fresh
     # phone session reads the saved running state and must not offer restart.
     reopened = AppTest.from_function(_render_panel, args=(path, source["id"], "coach", "Morgan")).run()
@@ -251,7 +254,7 @@ def test_running_coach_can_restart_personal_course_without_admin(practice):
     assert engine.restarts == [("practice-id", "Morgan")]
     assert engine.stops == []
     assert app.session_state["training_test_opened"] == "practice-id"
-    assert "Step 1 of 16 · Meet your group" in _text(app)
+    assert "Step 1 of 16" in _text(app) and "Meet your group" in _text(app)
 
 
 def test_expired_completed_coach_cannot_restart_from_ui(practice):

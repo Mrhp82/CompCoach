@@ -156,6 +156,42 @@ def test_learner_result_advances_and_delayed_call_is_not_lost(course):
     assert _tick(database, run)["stage"] == 10
 
 
+def test_virtual_coordinator_assigns_a_new_fencer_with_explicit_receipt(course):
+    database, _source, _hub, run, advance = course
+    primary = _enter_busy_scenario(database, run)
+    advance(16)
+    _tick(database, run)
+    database.mark_result(primary["event_id"], primary["id"], outcome="won", actor="Alex")
+    assert _tick(database, run)["stage"] == 9
+    advance(9)
+    _tick(database, run)
+    secondary = _target(database, run, "secondary_id")
+    database.take_over_athlete(secondary["event_id"], secondary["id"], "Alex", "Alex")
+    assert _tick(database, run)["stage"] == 10
+    database.cover_athlete(secondary["event_id"], secondary["id"], "Alex", "Alex", location="J2")
+    database.request_help(secondary["event_id"], secondary["id"], "Alex", location="J2")
+    assert _tick(database, run)["stage"] == 11
+    previously_assigned = {
+        athlete["id"]
+        for event in database.list_meet_events(run["id"])
+        for athlete in database.list_athletes(event["id"])
+        if "Alex" in athlete.get("de_coaches", [])
+    }
+    database.mark_result(secondary["event_id"], secondary["id"], outcome="lost", actor="Alex")
+    assert _tick(database, run)["stage"] == 12
+    assigned = _target(database, run, "reassigned_id")
+    assert assigned["id"] not in previously_assigned
+    notice = next(
+        row for row in database.list_assignment_notices(run["id"], "Alex")
+        if row["athlete_id"] == assigned["id"]
+    )
+    assert notice["assignment_status"] == "pending"
+    assert assigned["call_status"] == "on_deck" and assigned["live_location"] == "E2"
+    database.accept_assignment_notice(run["id"], notice["id"], "Alex", actor="Alex")
+    assert _tick(database, run)["stage"] == 12
+    assert database.get_athlete(assigned["event_id"], assigned["id"])["covered_by"] == ""
+
+
 def _open_coach_app(database, run, monkeypatch):
     import streamlit as st
     from streamlit.testing.v1 import AppTest

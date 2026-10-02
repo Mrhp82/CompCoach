@@ -11,7 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
-from uuid import uuid4
+from unicodedata import category
+from uuid import UUID, uuid4
 
 try:
     from compcoach_live.storage import (
@@ -27,9 +28,9 @@ except ModuleNotFoundError:  # direct Streamlit script
 SYSTEM_ACTOR = "Training simulation"
 DEFAULT_COACHES = ["Coach Alex", "Coach Taylor", "Coach Morgan"]
 TRAINING_STEPS = [
-    {"title": "Your identity and My Group", "instruction": "Choose your coach name and open My Group. Check your event, athletes and planned pool strips.", "hint": "You have your own complete exercise. Other coaches can join later without changing your progress."},
+    {"title": "Your identity and My Group", "instruction": "Open My Group. Check your event, athletes and planned pool strips.", "hint": "You have your own complete exercise. Other coaches can join later without changing your progress."},
     {"title": "Pool assignments and start signal", "instruction": "Open Live and check All assignments. The virtual coordinator has assigned your group and started Pools: the signal is green.", "hint": "My Group is your own work list; Live is the shared situation, coach availability and assignments."},
-    {"title": "Respond to shared help", "instruction": "A virtual colleague needs help. Tap I’m coming on the shared request.", "hint": "Check the athlete, location and elapsed time. Acknowledging help is not physical coverage."},
+    {"title": "Respond to shared help", "instruction": "A virtual colleague reports a pool emergency: an athlete has missed several bouts without coaching. Tap I’m coming on the shared request.", "hint": "During pools, everyone is busy. Request help only for a real emergency, such as several missed bouts or an athlete left without coaching who feels abandoned. Check location and elapsed time; acknowledging help is not physical coverage."},
     {"title": "Complete pool results", "instruction": "Record wins and losses for one athlete, for example 3 / 3. You can also practice marking an athlete absent.", "hint": "Completed athletes collapse below your current work. The other fictional pools finish after your result."},
     {"title": "Tell the team you are available", "instruction": "Your pools are finished. Tap I’m available to help and check the shared available-coach banner.", "hint": "Free coaches can be reassigned across events. The virtual coordinator will prepare your next assignment."},
     {"title": "Direct Elimination pod plan", "instruction": "Open Live to inspect the new DE pod assignments and green DE signal. Then return to My Group.", "hint": "DE coaches are equal. A pod reference such as A1 identifies the calling pod, not the actual bout strip."},
@@ -39,13 +40,36 @@ TRAINING_STEPS = [
     {"title": "A sudden call: take over", "instruction": "You are free. A new Now, On deck or In the hole call will appear for {secondary_name}, whose assigned coach is busy. Tap I’ll take over.", "hint": "A takeover immediately reserves you, even before physical coverage. Your name disappears from Available."},
     {"title": "Cover the athlete and request help", "instruction": "Add actual strip J2 for {secondary_name}, start physical coverage, and tap 🚨 Need help now. A virtual colleague will respond.", "hint": "Requests are global and include an elapsed timer. The coordinator can update calls, strips and covering coaches."},
     {"title": "One-tap DE result", "instruction": "Record Won or Lost for {secondary_name}. Check the wheel, Out list and your availability.", "hint": "A winner moves to the end of the wheel. A loss moves Out. Calls and coverage clear; no bout scores are required."},
-    {"title": "The only free coach is reassigned", "instruction": "You were the only free coach: the virtual coordinator assigned {reassigned_name} to you, On deck on E2. Open My Group, cover this athlete, then record Won or Lost.", "hint": "Assignments may cross events. Check the new athlete in your own group before heading to the actual strip."},
+    {"title": "The only free coach is reassigned", "instruction": "You were the only free coach: the virtual coordinator assigned {reassigned_name} to you, On deck on E2. Confirm your new assignment, open My Group, cover this athlete, then record Won or Lost.", "hint": "A new assignment stays visible until you confirm it. Assignments may cross events. Check the new athlete in your own group before heading to the actual strip."},
     {"title": "Record a bye", "instruction": "Record a Bye for {bye_name} and check the number of rounds passed.", "hint": "A bye advances the athlete without inventing a win. Mistakes can be corrected in Correct DE results."},
     {"title": "Mark a same-club bout", "instruction": "In Live → AFM vs AFM, mark {pair_a_name} and {pair_b_name} as opponents in this practice round.", "hint": "Without a bracket, the app cannot infer the pairing. Any coach who notices it can mark it."},
     {"title": "Resolve both athletes together", "instruction": "Record the winner of the paired AFM bout. Check that the opponent becomes Out and the winner moves to the end of the wheel.", "hint": "The result updates both athletes together. Dedicated correction controls restore mistakes safely."},
     {"title": "Next actual strip and final bout", "instruction": "{final_name} is fencing now on D4. Cover this new call, then record one final Won or Lost result.", "hint": "The next strip can differ from the previous strip and the calling pod. The exercise closes the fictional day after your result."},
     {"title": "Exercise complete", "instruction": "Review your completed skills and the final board. You may start Practice again while the exercise link remains active.", "hint": "Your real competition data was never changed. Each replay can create a different coverage response or sudden call."},
 ]
+
+# The pinned mobile guide names only the next action. The full explanation
+# stays available in the hint panel without making the guide cover the board.
+_GUIDE_ACTIONS = (
+    "Open My Group. Check your athletes and pool strips.",
+    "Open Live → All assignments. Check strips and the green Pools signal.",
+    "A pool emergency needs help. Tap I’m coming on the shared request.",
+    "Record one athlete’s pool wins and losses in My Group, for example 3 / 3.",
+    "Tap I’m available to help.",
+    "Open Live to check your DE pod plan. Then return to My Group.",
+    "Save On deck or In the hole for {primary_name}, without an actual strip.",
+    "Set {primary_name}’s actual strip to C3, then tap I’m with {primary_name}.",
+    "You are with {primary_name}. When the bout finishes, tap Won or Lost.",
+    "When {secondary_name}’s sudden call appears, tap I’ll take over.",
+    "Set {secondary_name} to J2, start physical coverage, then tap Need help now.",
+    "Tap Won or Lost for {secondary_name}. Check your availability.",
+    "Confirm your new assignment, cover {reassigned_name} on E2, then tap Won or Lost.",
+    "Record a Bye for {bye_name}.",
+    "Open Live → AFM vs AFM. Mark {pair_a_name} and {pair_b_name} as opponents.",
+    "Record the winner of the paired AFM bout.",
+    "Cover {final_name}’s new call on D4, then tap Won or Lost.",
+    "Review your completed skills. You may choose Practice again.",
+)
 
 _FIRST_NAMES = ["Leo", "Mila", "Eli", "Nora", "Theo", "Lena", "Finn", "Zoe", "Owen", "Iris", "Jude", "Ruby"]
 _SURNAMES = ["RIVERA", "BROOKS", "PARK", "REED", "BELL", "MORRIS", "HAYES", "FOSTER", "KENT", "GRAY", "ELLIS", "SHAW"]
@@ -65,6 +89,28 @@ def _actor(actor: str) -> str:
     if not value:
         raise CompCoachError("Select who you are before managing the exercise.")
     return value
+
+
+def _learner_name(value: str) -> str:
+    """Accept a readable typed identity without adding it to real coach lists."""
+    name = " ".join(str(value or "").split())
+    if not name:
+        raise CompCoachError("Enter your name to start your own practice.")
+    if len(name) > 80:
+        raise CompCoachError("Use a name with no more than 80 characters.")
+    if any(category(character).startswith("C") for character in name) or not any(
+        character.isalpha() for character in name
+    ):
+        raise CompCoachError("Enter a readable coach name to start your practice.")
+    return name
+
+
+def _participant_key(value: str) -> str:
+    """Normalize the retry identifier; it is independent of the display name."""
+    try:
+        return UUID(str(value)).hex
+    except (ValueError, TypeError, AttributeError):
+        raise CompCoachError("Start your practice again from the shared practice link.") from None
 
 
 def _row(conn: Any, meet_id: str, *, required: bool = True) -> dict | None:
@@ -128,6 +174,7 @@ def _metadata(row: dict) -> dict:
         "completed_runs": int(state.get("completed_runs", 0)), "last_completed_at": state.get("last_completed_at"),
         "stage_title": step["title"], "title": step["title"],
         "instruction": instruction, "hint": step["hint"],
+        "guide_instruction": str(state.get("guide_instruction_override") or _GUIDE_ACTIONS[stage]).format(**substitutions),
         "scenario_message": str(state.get("scenario_message") or ""),
         "last_feedback": str(state.get("last_feedback") or ""),
         "participants": participants,
@@ -143,14 +190,26 @@ def get_training(db: Any, meet_id: str) -> dict | None:
             return None
         result = _metadata(row)
         if result["is_hub"]:
-            runs = {}
-            for child in conn.execute("SELECT * FROM training_sessions WHERE source_meet_id = ?", (meet_id,)).fetchall():
+            runs = []
+            for child in conn.execute(
+                "SELECT * FROM training_sessions WHERE source_meet_id = ? ORDER BY created_at, meet_id",
+                (meet_id,),
+            ).fetchall():
                 child_metadata = _metadata(dict(child))
                 if child_metadata["kind"] == "run":
-                    runs[child_metadata["learner"]] = child_metadata
-            participants = []
+                    runs.append(child_metadata)
+            ordered_runs = []
+            seen_runs = set()
+            # Keep legacy invitation order while allowing every actual run to
+            # appear, including separate entrants with the same display name.
             for name in result["state"].get("coaches", []):
-                run = runs.get(name)
+                run = next((item for item in runs if item["learner"] == name), None)
+                ordered_runs.append((name, run))
+                if run:
+                    seen_runs.add(run["meet_id"])
+            ordered_runs.extend((run["learner"], run) for run in runs if run["meet_id"] not in seen_runs)
+            participants = []
+            for name, run in ordered_runs:
                 own = next((person for person in run["participants"] if person["name"] == name), {}) if run else {}
                 participants.append({
                     "name": name, "status": run["status"] if run else "not started",
@@ -254,13 +313,15 @@ def _create_meet(conn: Any, coaches: list[str], coords: list[str], timezone_name
 
 
 def start_training(db: Any, source_meet_id: str | None = None, coach_names: Iterable[str] | None = None,
-                   actor: str = "Admin", duration_days: int = 7) -> dict:
+                   actor: str = "Admin", duration_days: int = 7, *, open_entry: bool = False) -> dict:
     """Activate a 7/14-day hub; every coach receives an autonomous personal run."""
     actor = _actor(actor)
     if isinstance(duration_days,bool) or duration_days not in (7,14):
         raise ValueError("Practice duration must be 7 or 14 days.")
     if isinstance(coach_names,(str,bytes)):
         raise TypeError("Coach names must be a list.")
+    if not isinstance(open_entry, bool):
+        raise TypeError("Open practice entry must be true or false.")
     with db._connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         source = conn.execute("SELECT * FROM meets WHERE id = ?",(source_meet_id,)).fetchone() if source_meet_id else None
@@ -268,13 +329,13 @@ def start_training(db: Any, source_meet_id: str | None = None, coach_names: Iter
             raise CompCoachError("The source competition day was not found.")
         raw_names = list(coach_names) if coach_names is not None else _load(source["active_coaches_json"],[]) if source else DEFAULT_COACHES
         coaches = _coach_names(raw_names)
-        if not coaches or len(coaches) > 40:
+        if (not coaches and not open_entry) or len(coaches) > 40:
             raise CompCoachError("Select between one and 40 coaches for the exercise.")
         timezone_name = str(source["timezone"]) if source else "America/Los_Angeles"
         meet_id = _create_meet(conn,coaches,[],timezone_name,events=False)
         now = utc_now()
         expires_at = (datetime.fromisoformat(now) + timedelta(days=duration_days)).isoformat()
-        state = {"kind":"hub","coaches":coaches,"participants":{},"expires_at":expires_at,"duration_days":duration_days,
+        state = {"kind":"hub","coaches":coaches,"participants":{},"open_entry":open_entry,"expires_at":expires_at,"duration_days":duration_days,
                  "scenario_message":"Autonomous practice is active. Each coach gets a complete individual course with virtual colleagues and a virtual coordinator."}
         conn.execute(
             "INSERT INTO training_sessions (meet_id,source_meet_id,status,stage,state_json,created_by,created_at,updated_at,version) VALUES (?,?,'running',0,?,?,?,?,0)",
@@ -294,21 +355,33 @@ def _check_hub(conn: Any, hub_meet_id: str) -> dict:
     return hub
 
 
-def join_training(db: Any, hub_meet_id: str, coach: str) -> dict:
-    """Idempotently join one coach's private run under the shared practice link."""
-    coach = _actor(coach)
+def join_training(db: Any, hub_meet_id: str, coach: str, *, participant_key: str | None = None) -> dict:
+    """Join an isolated course, retrying by identity key rather than typed name.
+
+    The entry screen supplies a fresh UUID for each new entrant. Repeated
+    submissions with that key return the same course, while equal names with
+    different keys never share progress. Calls without a key retain the legacy
+    invited-name behavior for existing integrations.
+    """
+    coach = _learner_name(coach)
+    participant_key = _participant_key(participant_key) if participant_key is not None else None
     with db._connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         hub = _check_hub(conn,hub_meet_id)
         hub_state = _load(hub["state_json"],{})
-        canonical = next((name for name in hub_state["coaches"] if name.casefold() == coach.casefold()),None)
-        if canonical is None:
-            raise CompCoachError("Choose one of the coaches invited to this exercise.")
-        coach = canonical
+        if participant_key is None:
+            canonical = next((name for name in hub_state["coaches"] if name.casefold() == coach.casefold()),None)
+            if canonical is None:
+                raise CompCoachError("Open the shared practice link and enter your name.")
+            coach = canonical
         rows = conn.execute("SELECT * FROM training_sessions WHERE source_meet_id = ?",(hub_meet_id,)).fetchall()
         for existing in rows:
             old_state = _load(existing["state_json"],{})
-            if old_state.get("kind") == "run" and old_state.get("learner") == coach:
+            same_entrant = (
+                old_state.get("participant_key") == participant_key if participant_key is not None
+                else not old_state.get("participant_key") and old_state.get("learner") == coach
+            )
+            if old_state.get("kind") == "run" and same_entrant:
                 existing_meet = conn.execute(
                     "SELECT meets.*, (SELECT COUNT(*) FROM meet_events WHERE meet_events.meet_id = meets.id) AS event_count "
                     "FROM meets WHERE meets.id = ?", (existing["meet_id"],),
@@ -323,6 +396,8 @@ def join_training(db: Any, hub_meet_id: str, coach: str) -> dict:
         meet_id = _create_meet(conn,coaches,coords,str(hub_meet["timezone"]),events=True)
         now = utc_now()
         base = {"kind":"run","hub_meet_id":hub_meet_id,"learner":coach,"expires_at":hub_state["expires_at"],"coaches":coaches}
+        if participant_key is not None:
+            base["participant_key"] = participant_key
         # The marker must exist before ordinary assignment/history helpers run.
         conn.execute(
             "INSERT INTO training_sessions (meet_id,source_meet_id,status,stage,state_json,created_by,created_at,updated_at,version) VALUES (?,?,'running',0,?,?,?,?,0)",
@@ -331,7 +406,8 @@ def join_training(db: Any, hub_meet_id: str, coach: str) -> dict:
         state = {**_seed(db,conn,meet_id,coaches),**base,"variant":0,"pending_events":[]}
         row = _row(conn,meet_id)
         _persist(conn,row,state)
-        hub_state.setdefault("participants",{})[coach] = {"run_meet_id":meet_id,"joined_at":now,"milestones":[],"views":[]}
+        participant_id = f"participant:{participant_key}" if participant_key else coach
+        hub_state.setdefault("participants",{})[participant_id] = {"name":coach,"run_meet_id":meet_id,"joined_at":now,"milestones":[],"views":[]}
         _persist(conn,hub,hub_state)
         conn.commit()
     return db.get_meet(meet_id)
@@ -472,6 +548,7 @@ def _assign_to_learner(db: Any, conn: Any, athlete: dict, state: dict) -> dict:
 def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None:
     meet_id = row["meet_id"]
     state.pop("instruction_override",None)
+    state.pop("guide_instruction_override",None)
     state["scenario_message"] = ""
     athletes = _athletes(conn,meet_id)
     if stage == 1:
@@ -482,7 +559,7 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
         primary = _target(athletes,state,"primary_id")
         if primary:
             _help(db,conn,primary)
-            state["scenario_message"] = f"Virtual colleague request: {primary['name']} needs help at {primary['source_strip']}."
+            state["scenario_message"] = f"Pool emergency: {primary['name']} at {primary['source_strip']} has missed several bouts without coaching. A virtual colleague needs help now."
     elif stage == 3:
         _clear_help(db,conn,athletes)
     elif stage == 4:
@@ -542,7 +619,10 @@ def _enter_stage(db: Any, conn: Any, row: dict, state: dict, stage: int) -> None
         _clear_help(db,conn,athletes)
         candidates = [a for a in _athletes(conn,meet_id) if a["phase"] == "de" and _eligible(a) and not a["covered_by"] and not a["takeover_coach"]]
         if candidates:
-            athlete = _assign_to_learner(db,conn,candidates[0],state)
+            newly_assigned = [a for a in candidates if state["learner"] not in assigned_coaches(a)]
+            primary = _target(athletes,state,"primary_id")
+            cross_event = [a for a in newly_assigned if primary and a["event_id"] != primary["event_id"]]
+            athlete = _assign_to_learner(db,conn,(cross_event or newly_assigned or candidates)[0],state)
             athlete = _update(db,conn,athlete,{"call_status":"on_deck","live_location":"E2","de_awaiting_next":0,"reported_at":utc_now(),"reported_by":SYSTEM_ACTOR},"live_update")
             db._clear_available_coaches(conn,meet_id,[state["learner"]],SYSTEM_ACTOR)
             state.update(reassigned_id=athlete["id"],reassigned_name=athlete["name"])
@@ -782,6 +862,8 @@ def restart_training(db: Any, meet_id: str, actor: str) -> dict:
                   "kind":"run","hub_meet_id":state["hub_meet_id"],"learner":state["learner"],
                   "expires_at":state["expires_at"],"variant":int(state.get("variant",0))+1,"pending_events":[],
                   "completed_runs":int(state.get("completed_runs",0)),"last_completed_at":state.get("last_completed_at")}
+        if state.get("participant_key"):
+            seeded["participant_key"] = state["participant_key"]
         seeded["last_feedback"] = f"Exercise restarted by {actor}. The existing coach link still works."
         _persist(conn, row, seeded, stage=0, status="running")
         conn.commit()

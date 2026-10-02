@@ -11,7 +11,17 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.10.3
+## Included in v0.10.4
+
+### New in v0.10.4
+
+- **My Group** puts the athlete you are physically covering directly beneath its heading, with actual strip, busy timer and immediate **Won / Lost** commands for DE. Finishing the bout releases your coverage; detailed controls remain in **Current bout details**.
+- The personal DE list brings accepted takeovers and fresh **Now → On deck → In the hole** calls ahead of the waiting wheel. Old calls have a separate **Calls to verify** section; athletes already covered appear below current work. Uncalled winners still rotate to the end after each result.
+- A new or changed assignment has a visible **Accept assignment** notice showing the athlete, event, pod or pool, and current strip/call. Acceptance confirms responsibility; it does not claim physical arrival or start the busy timer. Admin/Coordinator can inspect assignment confirmations.
+- **I’m with [athlete]** disappears after physical coverage is recorded. Calls, actual-strip edits, help, release and result controls remain available. **I’ll take over** still reserves responsibility until physical arrival is confirmed.
+- Pool help guidance reserves **Need help** for real emergencies, such as several missed bouts or an athlete left without coaching. Ordinary pool coordination should respect that the other coaches are also busy.
+- Practice activation needs only a **7- or 14-day** duration. Coaches open the common link, type **Your name**, and tap **Start my practice** to begin a separate course. Equal display names never share progress; the personal practice URL resumes that course after reloads.
+- During an active personal practice, a compact guide remains fixed below the app header while scrolling. It shows the current step and next action; **Need a hint?** retains the full instructions, scenario, feedback and expiry. Practice explicitly teaches confirming a new assignment before heading to the bout.
 
 ### New in v0.10.3
 
@@ -32,7 +42,7 @@ DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 ### New in v0.10.0
 
 - Admin can activate **autonomous practice** for **7 or 14 days** from **Setup → Training** or **Home → Practice** and share one dedicated coach link. Admin does not need to supervise, advance scenarios, or remain connected.
-- Each coach chooses their name and receives a complete personal course. Returning to the same practice link resumes that course; coaches who join later start from the beginning. Other coaches' actions do not skip their lessons.
+- Each coach receives a complete personal course. Returning to its personal practice URL resumes that course; the common entry link starts a separate course from the beginning. Other coaches' actions do not skip their lessons.
 - The app plays the coordinator and virtual colleagues. It prepares pool and DE assignments, starts phases, requests help, calls athletes, and reacts to the learner's coverage and results. Delayed coverage can arrive or remain unavailable; sudden calls vary between Now, On deck and In the hole. A free learner can receive a new assignment across events.
 - The normal My Group and merged Live commands are used throughout. Tasks and hints guide pool results, optional absence, availability, calls with unknown strips, physical coverage, takeovers, emergency help, the DE result wheel, byes and same-club bouts through the end of the fictional day.
 - Completed coaches can tap **Practice again** during the activation period. Replays change coverage and call scenarios. Progress and scheduled simulation events survive reloads and application restarts.
@@ -262,7 +272,7 @@ the multi-phone checks in the deployment guide.
   summary never infers advancement or placement.
 - Scoreless result summaries: pool wins/losses use two mobile-friendly 0–6 tap
   selectors; DE keeps only Won/Lost and a running count of wins. DE outcomes
-  require a second confirmation tap.
+  save immediately; **Correct DE results** handles mistakes separately.
 - Independent red/green start indicators for Pools and Direct Elimination in
   every event. All coaches see them; Admin and Coordinator can change them.
 - One-tap help requests showing athlete, strip/pod, requester, elapsed time,
@@ -317,7 +327,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip -o CompCoach_Live_v0.8.0.zip
+unzip -o CompCoach_Live_v0.10.4.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1
