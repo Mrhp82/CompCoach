@@ -51,6 +51,10 @@ try:
     from compcoach_live.parsers import parse_pasted_table, import_name_noise_reason
     from compcoach_live.import_cleanup import quarantine_import_noise
     from compcoach_live.live_controls import render_live_controls, render_pool_takeover_arrival
+    from compcoach_live.missed_coaching_ui import (
+        render_missed_coaching_control,
+        render_missed_coaching_review,
+    )
     from compcoach_live.busy_board import render_busy_coach_board
     from compcoach_live.de_rotation import ordered_de_athletes
     from compcoach_live.de_corrections_ui import render_de_result_corrections
@@ -58,6 +62,7 @@ try:
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
     from compcoach_live.training_ui import render_training_panel, render_training_start
     from compcoach_live.read_cache import RenderReads
+    from compcoach_live.result_styles import apply_result_styles
     from compcoach_live.refresh import training_hub_status, training_needs_tick, training_visible_revision
     from compcoach_live.storage import (
         NO_CHANGE,
@@ -86,6 +91,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from parsers import parse_pasted_table, import_name_noise_reason
     from import_cleanup import quarantine_import_noise
     from live_controls import render_live_controls, render_pool_takeover_arrival
+    from missed_coaching_ui import (
+        render_missed_coaching_control,
+        render_missed_coaching_review,
+    )
     from busy_board import render_busy_coach_board
     from de_rotation import ordered_de_athletes
     from de_corrections_ui import render_de_result_corrections
@@ -93,6 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from training import get_training, join_training, list_training_sessions, tick_training
     from training_ui import render_training_panel, render_training_start
     from read_cache import RenderReads
+    from result_styles import apply_result_styles
     from refresh import training_hub_status, training_needs_tick, training_visible_revision
     from storage import (
         NO_CHANGE,
@@ -102,7 +112,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.5"
+APP_VERSION = "0.10.6"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -247,6 +257,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+apply_result_styles()
 
 
 def secret_value(name: str, default: str = "") -> str:
@@ -2312,6 +2323,26 @@ def render_help_alerts(event: dict, role: str, actor: str, athletes: list[dict])
     st.divider()
 
 
+def render_athlete_help_control(event: dict, actor: str, athlete: dict) -> None:
+    if athlete.get("phase") == "pools":
+        st.caption("Pools: use Need help only for a real emergency, such as several uncovered bouts or an athlete left without support. All coaches are busy; use it sparingly.")
+    if athlete.get("help_requested_at"):
+        st.caption("🚨 Help request active — status is shown at the top of the board.")
+    elif st.button(
+        "🚨 Need help now", type="primary", width="stretch",
+        key=f"help_request_{athlete['id']}",
+    ):
+        try:
+            db.request_help(
+                event["id"], athlete["id"], actor,
+                expected_version=athlete["version"],
+            )
+            st.toast(f"Help request sent for {athlete['name']}.")
+            st.rerun()
+        except CompCoachError as exc:
+            show_error(exc)
+
+
 def render_athlete_card(
     event: dict,
     role: str,
@@ -2408,31 +2439,20 @@ def render_athlete_card(
 
         writable = event["status"] == "open" and bool(actor)
         if athlete["active_state"] == "eliminated":
+            render_missed_coaching_control(
+                db, event, actor, athlete,
+                key_prefix="personal" if personal else "live", meet_state=meet_state,
+            )
             st.caption("Use Correct DE results below to correct a result or restore this athlete.")
             return
 
-        if personal and writable:
-            if athlete.get("phase") == "pools":
-                st.caption("Pools: use Need help only for a real emergency, such as several uncovered bouts or an athlete left without support. All coaches are busy; use it sparingly.")
-            if athlete.get("help_requested_at"):
-                st.caption("🚨 Help request active — status is shown at the top of the board.")
-            elif st.button(
-                "🚨 Need help now",
-                type="primary",
-                width="stretch",
-                key=f"help_request_{athlete['id']}",
-            ):
-                try:
-                    db.request_help(
-                        event["id"],
-                        athlete["id"],
-                        actor,
-                        expected_version=athlete["version"],
-                    )
-                    st.toast(f"Help request sent for {athlete['name']}.")
-                    st.rerun()
-                except CompCoachError as exc:
-                    show_error(exc)
+        if athlete["phase"] == "pools":
+            render_missed_coaching_control(
+                db, event, actor, athlete,
+                key_prefix="personal" if personal else "live", meet_state=meet_state,
+            )
+            if personal and writable:
+                render_athlete_help_control(event, actor, athlete)
 
         render_pool_absence_control(
             db, event, actor, athlete,
@@ -2511,16 +2531,26 @@ def render_athlete_card(
                 "bout_version": pending_bout["version"] if pending_bout else None,
                 "opponent_version": opponent["version"] if opponent else None,
             }
-            left, right = st.columns(2)
-            for column, outcome in ((left, "won"), (right, "lost")):
-                with column:
-                    st.button(outcome.title(), key=f"{outcome}_{athlete['id']}",
-                              width="stretch", on_click=apply_de_result_snapshot,
-                              args=(event["id"], athlete["id"], outcome, actor, snapshot))
-            if not pending_bout:
-                st.button("Bye", key=f"bye_{athlete['id']}", width="stretch",
-                          on_click=apply_de_result_snapshot,
-                          args=(event["id"], athlete["id"], "bye", actor, snapshot))
+            prefix = "personal" if personal else "live"
+            with st.container(key=f"cc_result_actions_{prefix}_{athlete['id']}"):
+                st.caption(f"{athlete['name']} · {athlete.get('live_location') or 'actual strip to confirm'} · Bout result")
+                left, right = st.columns(2)
+                for column, outcome in ((left, "won"), (right, "lost")):
+                    with column:
+                        st.button(outcome.title(), key=f"{outcome}_{athlete['id']}",
+                                  width="stretch", on_click=apply_de_result_snapshot,
+                                  args=(event["id"], athlete["id"], outcome, actor, snapshot))
+            with st.expander(f"More actions · {athlete['name']}", expanded=False):
+                if personal:
+                    render_athlete_help_control(event, actor, athlete)
+                render_missed_coaching_control(
+                    db, event, actor, athlete,
+                    key_prefix=prefix, meet_state=meet_state,
+                )
+                if not pending_bout:
+                    st.button("Bye", key=f"bye_{athlete['id']}", width="stretch",
+                              on_click=apply_de_result_snapshot,
+                              args=(event["id"], athlete["id"], "bye", actor, snapshot))
 
 
 def is_de_advanced(athlete: dict) -> bool:
@@ -2552,16 +2582,17 @@ def render_current_bout_actions(meet: dict, actor: str, athlete: dict) -> None:
         return
     snapshot = de_result_snapshot(athlete, list_de_bouts(db, athlete["event_id"]))
     st.caption(f"{athlete_event_label(athlete)} · Record this bout to finish coverage")
-    won, lost = st.columns(2)
-    for column, outcome in ((won, "won"), (lost, "lost")):
-        with column:
-            st.button(
-                outcome.title(), key=f"current_{outcome}_{athlete['id']}",
-                width="stretch", type="primary" if outcome == "won" else "secondary",
-                disabled=meet.get("status") != "open",
-                on_click=apply_de_result_snapshot,
-                args=(athlete["event_id"], athlete["id"], outcome, actor, snapshot),
-            )
+    with st.container(key=f"cc_result_actions_current_{athlete['id']}"):
+        won, lost = st.columns(2)
+        for column, outcome in ((won, "won"), (lost, "lost")):
+            with column:
+                st.button(
+                    outcome.title(), key=f"current_{outcome}_{athlete['id']}",
+                    width="stretch", type="primary" if outcome == "won" else "secondary",
+                    disabled=meet.get("status") != "open",
+                    on_click=apply_de_result_snapshot,
+                    args=(athlete["event_id"], athlete["id"], outcome, actor, snapshot),
+                )
 
 
 def apply_de_result_snapshot(event_id, athlete_id, outcome, actor, snapshot):
@@ -2691,6 +2722,10 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
     with st.expander("Pool results", expanded=migrated_panel == "Pool Results",
                      key=f"{panel_key}_results", type="compact"):
         render_pool_results_summary(events, athletes)
+    render_missed_coaching_review(
+        db, event, actor, role, read_only=event.get("status") != "open",
+        include_training=bool(get_training(db, event["id"])),
+    )
     render_quick_update(event, role, actor, athletes=athletes, expanded=False)
     for child in events:
         if any(row.get("phase") == "de" and row["event_id"] == child["id"] for row in athletes):
@@ -4077,6 +4112,8 @@ def render_share(event: dict) -> None:
 
 
 ACTION_LABELS = {
+    "missed_coaching_reported": "recorded missed coaching",
+    "missed_coaching_corrected": "corrected a missed-coaching report",
     "coverage_requested": "requested emergency coverage",
     "coverage_request_accepted": "accepted emergency coverage",
     "coverage_request_cancelled": "cancelled emergency coverage request",
@@ -4157,7 +4194,10 @@ def render_activity(event: dict, actor: str, role: str) -> None:
                 and bool(action.get("athlete_id"))
                 and action.get("previous") is not None
                 and not action.get("undone_at")
-                and action["action"] not in {"undo", "pod_assignment", "sector_support"}
+                and action["action"] not in {
+                    "undo", "pod_assignment", "sector_support",
+                    "missed_coaching_reported", "missed_coaching_corrected",
+                }
                 and (role == "admin" or action["action"] in COORDINATOR_UNDO_ACTIONS)
             )
             if can_undo and st.button("Undo", key=f"undo_action_{action['id']}", width="stretch"):
@@ -4519,7 +4559,7 @@ def render_settings_hub(event: dict, actor: str) -> None:
     """Keep the expanded admin setup usable on a narrow phone screen."""
 
     section = select_nav(
-        ["Day", "Competition", "Coaches", "Schedule"],
+        ["Day", "Competition", "Coaches", "Schedule", "Coaching review"],
         f"settings_section_{event['id']}",
     )
     if section == "Day":
@@ -4540,6 +4580,12 @@ def render_settings_hub(event: dict, actor: str) -> None:
             render_competition_profile(db, event, actor, asset_store=asset_store)
     elif section == "Coaches":
         render_coach_management(db, event, actor)
+    elif section == "Coaching review":
+        st.subheader("Coaching review")
+        render_missed_coaching_review(
+            db, event, actor, "admin", read_only=event.get("status") != "open",
+            include_training=bool(get_training(db, event["id"])),
+        )
     else:
         def open_day(selected: dict) -> None:
             selected_day = dict(selected)

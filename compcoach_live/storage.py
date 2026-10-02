@@ -26,8 +26,10 @@ from uuid import uuid4
 
 try:
     from .assignment_notices import assignment_is_actionable
+    from .missed_coaching import build_coach_status_snapshot
 except ImportError:
     from assignment_notices import assignment_is_actionable
+    from missed_coaching import build_coach_status_snapshot
 
 NO_CHANGE = object()
 
@@ -463,6 +465,49 @@ class CompCoachDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_coverage_recipients_coach
                     ON coverage_request_recipients(coach_key, request_id);
+
+                CREATE TABLE IF NOT EXISTS missed_coaching_incidents (
+                    id TEXT PRIMARY KEY,
+                    meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                    athlete_id TEXT NOT NULL REFERENCES athletes(id) ON DELETE CASCADE,
+                    athlete_name TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    phase TEXT NOT NULL CHECK (phase IN ('pools', 'de')),
+                    pod TEXT NOT NULL DEFAULT '',
+                    source_strip TEXT NOT NULL DEFAULT '',
+                    live_location TEXT NOT NULL DEFAULT '',
+                    call_status TEXT NOT NULL DEFAULT 'waiting',
+                    reported_at TEXT,
+                    bout_kind TEXT NOT NULL,
+                    bout_key TEXT NOT NULL,
+                    bout_number INTEGER,
+                    bout_outcome TEXT NOT NULL DEFAULT '',
+                    source_action_id INTEGER,
+                    source_result_at TEXT,
+                    location_snapshot_source TEXT NOT NULL DEFAULT 'current',
+                    athlete_snapshot_json TEXT NOT NULL,
+                    bout_snapshot_json TEXT NOT NULL,
+                    coaches_snapshot_json TEXT NOT NULL,
+                    summary_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    recorded_by TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    idempotency_key TEXT,
+                    is_training INTEGER NOT NULL DEFAULT 0 CHECK (is_training IN (0, 1)),
+                    corrected_at TEXT,
+                    corrected_by TEXT NOT NULL DEFAULT '',
+                    correction_note TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_missed_coaching_meet
+                    ON missed_coaching_incidents(meet_id, recorded_at, corrected_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_missed_coaching_retry
+                    ON missed_coaching_incidents(meet_id, idempotency_key)
+                    WHERE idempotency_key IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_missed_coaching_de_bout
+                    ON missed_coaching_incidents(athlete_id, bout_key)
+                    WHERE phase = 'de' AND corrected_at IS NULL;
 
                 CREATE TABLE IF NOT EXISTS coaches (
                     id TEXT PRIMARY KEY,
@@ -2471,6 +2516,8 @@ class CompCoachDB:
              "JOIN coverage_requests AS request ON request.id = record.request_id "
              "JOIN target ON target.id = request.meet_id",
              ("request_id", "coach_key", "availability_version")),
+            ("missed_coaching", "missed_coaching_incidents AS record JOIN target "
+             "ON target.id = record.meet_id", ("id", "version")),
             ("presence", "day_coach_presence AS record JOIN target "
              "ON target.id = record.meet_id", (
                  "coach_id", "presence_status", "home_event_id", "updated_at", "updated_by",
@@ -4862,6 +4909,260 @@ class CompCoachDB:
             result = dict(conn.execute("SELECT * FROM coverage_requests WHERE id = ?", (request_id,)).fetchone())
             conn.commit()
         return result
+
+    @staticmethod
+    def _missed_coaching_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        for name in ("athlete_snapshot", "bout_snapshot", "coaches_snapshot", "summary"):
+            data[name] = _load(data.pop(f"{name}_json"), {})
+        data["is_training"] = bool(data["is_training"])
+        data["is_corrected"] = bool(data["corrected_at"])
+        data["status"] = "corrected" if data["is_corrected"] else "reported"
+        return data
+
+    @staticmethod
+    def _missed_coaching_bout_context(
+        conn: sqlite3.Connection, athlete: Mapping[str, Any], context: Any = None,
+    ) -> dict[str, Any]:
+        """Identify a tracked DE stage; a bye never becomes a fenced bout.
+
+        Current/last-completed reports share the same advancement key so two
+        phones cannot duplicate a DE incident around a result tap. A phase
+        entry ID separates a genuine reset from a prior DE run for the athlete.
+        """
+        explicit = context.get("kind", context.get("which", context.get("bout_kind"))) if isinstance(context, Mapping) else context
+        if explicit is not None:
+            explicit = str(explicit).strip()
+        if athlete["phase"] == "pools":
+            if explicit not in {None, "", "pools", "current"}:
+                raise ValueError("Pools reports do not have a tracked individual-bout result.")
+            return {"bout_kind": "pools", "bout_key": uuid4().hex, "bout_number": None,
+                    "bout_outcome": "", "source_action_id": None, "source_result_at": None,
+                    "location_snapshot_source": "current", "bout_snapshot": dict(athlete)}
+        outcome = str(athlete.get("last_de_result") or "")
+        if not explicit:
+            explicit = "last_completed" if (
+                outcome == "lost"
+                or (outcome == "won" and athlete.get("call_status", "waiting") == "waiting"
+                    and not athlete.get("covered_by") and not athlete.get("takeover_coach"))
+            ) else "current"
+        if explicit not in {"current", "last_completed"}:
+            raise ValueError("DE bout context must be current or last_completed.")
+        if explicit == "last_completed" and outcome == "bye":
+            raise CompCoachError("A bye is not a fenced bout. Select the current bout instead.")
+        if explicit == "last_completed" and outcome not in {"won", "lost"}:
+            raise CompCoachError("There is no completed DE bout result to report yet.")
+        if explicit == "current" and athlete.get("active_state") == "eliminated":
+            raise CompCoachError("This athlete is out. Select the last completed bout instead.")
+        rounds = int(athlete.get("de_wins") or 0) + int(athlete.get("de_byes") or 0)
+        number = rounds if explicit == "last_completed" and outcome == "won" else rounds + 1
+        number = max(1, number)
+        actions = conn.execute(
+            "SELECT id, action, previous_json, new_json, undone_at FROM actions "
+            "WHERE event_id = ? AND athlete_id = ? ORDER BY id DESC",
+            (athlete["event_id"], athlete["id"]),
+        ).fetchall()
+        epoch: Any = athlete.get("created_at", "legacy")
+        completed = None
+        for action in actions:
+            saved = _load(action["new_json"], {}) or {}
+            previous = _load(action["previous_json"], {}) or {}
+            if saved.get("phase") == "de" and previous.get("phase") != "de":
+                epoch = action["id"]
+                break
+        if explicit == "last_completed":
+            for action in actions:
+                if action["action"] not in {"won", "lost", "de_bout_result"} or action["undone_at"]:
+                    continue
+                saved = _load(action["new_json"], {}) or {}
+                if saved.get("phase") == "de" and all(
+                    saved.get(field) == athlete.get(field) for field in DE_RESULT_FIELDS
+                ):
+                    completed = action
+                    break
+        bout = _load(completed["previous_json"], {}) if completed else dict(athlete)
+        return {
+            "bout_kind": explicit, "bout_key": f"de:{epoch}:{number}", "bout_number": number,
+            "bout_outcome": outcome if explicit == "last_completed" else "",
+            "source_action_id": int(completed["id"]) if completed else None,
+            "source_result_at": athlete.get("last_de_result_at") if explicit == "last_completed" else None,
+            "location_snapshot_source": ("last_completed_result" if completed else "unknown_after_result")
+                if explicit == "last_completed" else "current",
+            "bout_snapshot": dict(bout or athlete),
+        }
+
+    def report_missed_coaching(
+        self, event_id: str, athlete_id: str, actor: str, *,
+        expected_version: int | None = None, idempotency_key: str | None = None,
+        note: str = "", bout_context: Any = None,
+    ) -> dict[str, Any]:
+        """Record an uncovered bout without changing any sporting/live state.
+
+        The immutable coach snapshot describes the app at REPORTING time,
+        including explicit unknown availability. It does not infer why the
+        coaching was missed or claim to reconstruct the earlier bout time.
+        """
+        clean_actor = " ".join(str(actor or "").split())
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        clean_note = str(note or "").strip()
+        if len(clean_note) > 4000:
+            raise ValueError("The incident note must be 4000 characters or fewer.")
+        retry_key = str(idempotency_key or "").strip() or None
+        if retry_key is not None and len(retry_key) > 200:
+            raise ValueError("The report retry key must be 200 characters or fewer.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            meet = dict(self._meet_for_event(conn, event_id))
+            self._assert_meet_open(conn, str(meet["id"]))
+            if meet["ended_at"] or meet["day_status"] != "active":
+                raise EventLockedError("Missed-coaching reports require an active competition day.")
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?", (event_id, athlete_id),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            athlete = dict(row)
+            if retry_key is not None:
+                existing = conn.execute(
+                    "SELECT * FROM missed_coaching_incidents WHERE meet_id = ? AND idempotency_key = ?",
+                    (meet["id"], retry_key),
+                ).fetchone()
+                if existing:
+                    if existing["athlete_id"] != athlete_id or existing["event_id"] != event_id:
+                        raise ConcurrentUpdateError("This retry key belongs to a different report. Refresh and try again.")
+                    conn.commit()
+                    return {**self._missed_coaching_dict(existing), "was_already_recorded": True}
+            if expected_version is not None and int(athlete["version"]) != int(expected_version):
+                raise ConcurrentUpdateError("This athlete changed on another phone. Review the bout and try again.")
+            bout = self._missed_coaching_bout_context(conn, athlete, bout_context)
+            if athlete["phase"] == "de":
+                existing = conn.execute(
+                    "SELECT * FROM missed_coaching_incidents WHERE athlete_id = ? AND bout_key = ? "
+                    "AND corrected_at IS NULL", (athlete_id, bout["bout_key"]),
+                ).fetchone()
+                if existing:
+                    conn.commit()
+                    return {**self._missed_coaching_dict(existing), "was_already_recorded": True}
+            event_rows = conn.execute(
+                "SELECT events.id, events.name FROM events JOIN meet_events "
+                "ON meet_events.event_id = events.id WHERE meet_events.meet_id = ?",
+                (meet["id"],),
+            ).fetchall()
+            event_names = {str(event["id"]): str(event["name"]) for event in event_rows}
+            all_athletes = conn.execute(
+                "SELECT athletes.* FROM athletes JOIN meet_events ON meet_events.event_id = athletes.event_id "
+                "WHERE meet_events.meet_id = ?", (meet["id"],),
+            ).fetchall()
+            availability = conn.execute(
+                "SELECT * FROM coach_availability WHERE meet_id = ?", (meet["id"],),
+            ).fetchall()
+            coaches = build_coach_status_snapshot(
+                _coach_names(_load(meet["active_coaches_json"], [])),
+                [dict(a) for a in all_athletes], [dict(a) for a in availability], event_names,
+            )
+            now = utc_now()
+            coaches["snapshot_at"] = now
+            summary = {name: coaches[name] for name in (
+                "total_coaches", "busy_count", "reserved_count", "available_count", "unconfirmed_count",
+                "all_committed", "summary_label", "status_note",
+            )}
+            summary.update(
+                snapshot_at=now,
+                target_coverage_was_recorded=bool(athlete.get("covered_by")),
+                target_recorded_coach=str(athlete.get("covered_by") or ""),
+                target_reservation_was_recorded=bool(athlete.get("takeover_coach")),
+                target_reserved_coach=str(athlete.get("takeover_coach") or ""),
+                bout_coverage_was_recorded=bool(bout["bout_snapshot"].get("covered_by")),
+                bout_recorded_coach=str(bout["bout_snapshot"].get("covered_by") or ""),
+            )
+            training = conn.execute(
+                "SELECT 1 FROM training_sessions WHERE meet_id = ?", (meet["id"],),
+            ).fetchone()
+            snapshot = bout["bout_snapshot"]
+            incident_id = uuid4().hex
+            conn.execute(
+                "INSERT INTO missed_coaching_incidents (id, meet_id, event_id, athlete_id, athlete_name, "
+                "event_name, phase, pod, source_strip, live_location, call_status, reported_at, "
+                "bout_kind, bout_key, bout_number, bout_outcome, source_action_id, source_result_at, "
+                "location_snapshot_source, athlete_snapshot_json, bout_snapshot_json, coaches_snapshot_json, "
+                "summary_json, recorded_at, recorded_by, note, idempotency_key, is_training) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (incident_id, meet["id"], event_id, athlete_id, athlete["name"], event_names[event_id],
+                 athlete["phase"], snapshot.get("pod", ""), snapshot.get("source_strip", ""),
+                 snapshot.get("live_location", ""), snapshot.get("call_status", "waiting"), snapshot.get("reported_at"),
+                 bout["bout_kind"], bout["bout_key"], bout["bout_number"], bout["bout_outcome"],
+                 bout["source_action_id"], bout["source_result_at"], bout["location_snapshot_source"],
+                 _dump(athlete), _dump(snapshot), _dump(coaches), _dump(summary), now, clean_actor,
+                 clean_note, retry_key, int(training is not None)),
+            )
+            self._log_action(
+                conn, event_id=event_id, athlete_id=athlete_id, action="missed_coaching_reported",
+                actor=clean_actor, previous=None,
+                new={"missed_coaching_incident_id": incident_id, "name": athlete["name"],
+                     "bout_kind": bout["bout_kind"], "bout_number": bout["bout_number"]}, version_after=None,
+            )
+            saved = conn.execute("SELECT * FROM missed_coaching_incidents WHERE id = ?", (incident_id,)).fetchone()
+            conn.commit()
+        return {**self._missed_coaching_dict(saved), "was_already_recorded": False}
+
+    def list_missed_coaching(
+        self, meet_id: str, *, include_corrected: bool = False, include_training: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Read immutable incident evidence, including archived days without writes."""
+        sql = "SELECT * FROM missed_coaching_incidents WHERE meet_id = ?"
+        if not include_corrected:
+            sql += " AND corrected_at IS NULL"
+        if not include_training:
+            sql += " AND is_training = 0"
+        sql += " ORDER BY recorded_at DESC, id DESC"
+        with self._connection() as conn:
+            rows = conn.execute(sql, (meet_id,)).fetchall()
+        return [self._missed_coaching_dict(row) for row in rows]
+
+    def correct_missed_coaching(
+        self, meet_id: str, incident_id: str, actor: str, *,
+        expected_version: int | None = None, note: str = "",
+    ) -> dict[str, Any]:
+        """Mark an incorrect report without deleting or changing its evidence."""
+        clean_actor = " ".join(str(actor or "").split())
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        clean_note = str(note or "").strip()
+        if len(clean_note) > 4000:
+            raise ValueError("The correction note must be 4000 characters or fewer.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            meet = self._assert_meet_open(conn, meet_id)
+            if meet["ended_at"] or meet["day_status"] != "active":
+                raise EventLockedError("Archived missed-coaching reports are read-only.")
+            row = conn.execute(
+                "SELECT * FROM missed_coaching_incidents WHERE id = ? AND meet_id = ?", (incident_id, meet_id),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Missed-coaching report not found.")
+            self._assert_open(conn, str(row["event_id"]))
+            if row["corrected_at"]:
+                conn.commit()
+                return self._missed_coaching_dict(row)
+            if expected_version is not None and int(row["version"]) != int(expected_version):
+                raise ConcurrentUpdateError("This report changed on another phone. Refresh the review.")
+            now = utc_now()
+            conn.execute(
+                "UPDATE missed_coaching_incidents SET corrected_at = ?, corrected_by = ?, correction_note = ?, "
+                "version = version + 1 WHERE id = ? AND corrected_at IS NULL",
+                (now, clean_actor, clean_note, incident_id),
+            )
+            self._log_action(
+                conn, event_id=str(row["event_id"]), athlete_id=str(row["athlete_id"]),
+                action="missed_coaching_corrected", actor=clean_actor, previous=None,
+                new={"missed_coaching_incident_id": incident_id, "name": row["athlete_name"], "note": clean_note},
+                version_after=None,
+            )
+            saved = conn.execute("SELECT * FROM missed_coaching_incidents WHERE id = ?", (incident_id,)).fetchone()
+            conn.commit()
+        return self._missed_coaching_dict(saved)
 
     def list_assignment_history(
         self,

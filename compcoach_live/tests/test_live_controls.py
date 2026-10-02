@@ -52,6 +52,11 @@ def _button(app, label):
     return matches[0]
 
 
+def _modify_call(app):
+    app.toggle[0].set_value(True).run()
+    assert not app.exception
+
+
 @pytest.mark.parametrize("label,status", [("Now", "now"), ("On deck", "on_deck"),
                                            ("In the hole", "in_hole")])
 def test_call_is_one_tap_on_actual_strip_not_the_imported_pod(tmp_path, label, status):
@@ -69,7 +74,8 @@ def test_call_is_one_tap_on_actual_strip_not_the_imported_pod(tmp_path, label, s
     assert saved["pod"] == "B" and saved["source_strip"] == "B1"
     assert saved["reported_at"] and saved["reported_by"] == "Alex"
     assert saved["de_coaches"] == ["Alex", "Taylor"]
-    assert app.text_input[0].value == "C3"
+    assert not app.text_input
+    assert any("Actual strip <b>C3</b>" in block.value for block in app.markdown)
     assert not any("Confirm" in button.label for button in app.button)
 
 
@@ -91,6 +97,9 @@ def test_call_with_unknown_strip_is_saved_and_visibly_needs_location(tmp_path, l
     # The saved state remains visible after the transient success message clears.
     app.run()
     assert any("Actual strip to confirm" in message.value for message in app.warning)
+    assert not any(button.label == label for button in app.button)
+    assert any(label in caption.value for caption in app.caption)
+    _modify_call(app)
     assert _button(app, label).proto.type == "primary"
 
 
@@ -102,6 +111,7 @@ def test_known_strip_can_be_added_to_existing_call_without_changing_status(tmp_p
     _button(app, "On deck").click().run()
     first = db.get_athlete(event["id"], athlete["id"])
     assert first["call_status"] == "on_deck" and first["live_location"] == ""
+    _modify_call(app)
     app.text_input[0].input("c3")
     _button(app, "On deck").click().run()
     saved = db.get_athlete(event["id"], athlete["id"])
@@ -135,6 +145,7 @@ def test_not_called_clears_actual_strip_but_keeps_the_calling_pod(tmp_path):
     db, path, _, event, athlete, _ = _seed(tmp_path)
     db.report_call(event["id"], athlete["id"], status="now", location="D4", actor="Jordan")
     app = _app(path, event, athlete)
+    _modify_call(app)
     _button(app, "Not called").click().run()
     saved = db.get_athlete(event["id"], athlete["id"])
     assert saved["call_status"] == "waiting" and saved["live_location"] == ""
@@ -148,6 +159,7 @@ def test_next_call_after_a_win_can_save_unknown_strip_without_reusing_old_bout_l
     db, path, _, event, athlete, _ = _seed(tmp_path)
     db.report_call(event["id"], athlete["id"], status="now", location="D4", actor="Jordan")
     app = _app(path, event, athlete)
+    _modify_call(app)
     assert app.text_input[0].value == "D4"
     db.mark_result(event["id"], athlete["id"], outcome="won", actor="Alex")
     app.run()
@@ -165,6 +177,7 @@ def test_new_bout_does_not_keep_previous_actual_strip_in_widget_state(tmp_path):
     db, path, _, event, athlete, _ = _seed(tmp_path)
     db.report_call(event["id"], athlete["id"], status="now", location="D4", actor="Jordan")
     app = _app(path, event, athlete)
+    _modify_call(app)
     assert app.text_input[0].value == "D4"
     old_key = app.text_input[0].key
     db.mark_result(event["id"], athlete["id"], outcome="won", actor="Alex")
@@ -267,6 +280,7 @@ def test_republishing_same_coach_location_does_not_reset_busy_timer(tmp_path):
     _button(app, "I’m with CASEY Athlete").click().run()
     before = db.get_athlete(event["id"], athlete["id"])
     assert not any(button.label == "I’m with CASEY Athlete" for button in app.button)
+    _modify_call(app)
     app.text_input[0].input("J4")
     _button(app, "Now").click().run()
     after = db.get_athlete(event["id"], athlete["id"])

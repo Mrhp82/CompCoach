@@ -11,7 +11,19 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.10.5
+## Included in v0.10.6
+
+### New in v0.10.6
+
+- **⚠️ Missed coaching** records an athlete's bout without coaching with one tap, separately from **WIN / LOST**, a Pool W/L summary, or an Out state. It does not enter or change a competitive result. Recording an incident does not require writing an explanation first.
+- The collapsed **⚠️ Missed coaching · N athletes** section in **Team situation** retains these reports. **Athlete to report → Record missed coaching** supports retrospective reports for athletes already Out or with completed Pools, with **Notes (optional)**. Admin can also open a closed day through **Home → History → Open read-only archive** and review its saved reports.
+- Each report saves the staff state **at reporting time**, across every event in that competition day: recorded physical coverage with athlete and strip, reserved takeovers, explicitly declared availability, and unconfirmed availability. This snapshot describes the app's records; it does not establish who was truly free during the bout or why coaching was missed.
+- Incorrect reports use **Mark report as incorrect**, with an optional correction note and an audit record. Correcting a report does not restore an athlete, undo a result, change assignments, or use the generic athlete-action Undo.
+- Result controls emphasize **WINS / WIN** in green and **LOSSES / LOST** in red. Pool choices **0–6** use equally sized buttons in four columns and two rows, keeping wins and losses easy to tap on a phone.
+- DE cards keep the athlete's name and actual strip beside their actions. The current call is a note; one compact row shows only the next useful choices: **Not called → In the hole / On deck / Now**, **In the hole → On deck / Now**, **On deck → Now**. **Modify call** exposes every status and the actual-strip editor for corrections. Known strips stay out of the default input area; an unknown-strip input remains directly accessible, and calls still save without a strip.
+- **I’m with [athlete]** is a primary action and disappears after physical coverage. An Admin who is also an active coach has the same direct self-coverage action; choosing another coach stays in the collapsed **Coach coverage** section. The compact **WIN / LOST** row precedes **More actions**, which holds optional Bye, help and missed-coaching controls.
+- Practice recognizes a saved athlete call from either **My Group** or **Team situation**, including **Report athlete location → Publish update**, without repeating it in the other view. The call lesson accepts a confirmed strip too; leave it empty when unknown. Both views also share the same saved data during a real competition. Lessons specifically about visiting a screen still require that visit.
+- The missed-coaching report is available during practice as an optional manual exercise. It is not a required step in the autonomous course.
 
 ### New in v0.10.5
 
@@ -346,7 +358,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip -o CompCoach_Live_v0.10.5.zip
+unzip -o CompCoach_Live_v0.10.6.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1

@@ -111,6 +111,7 @@ def test_busy_coach_can_update_call_and_strip_without_resetting_coverage_timer(s
     db.cover_athlete(event["id"], athlete["id"], "Alex", "Alex", location="C3")
     before = db.get_athlete(event["id"], athlete["id"])
     app = _app(session)
+    app.toggle[0].set_value(True).run()
     app.text_input[0].input("J4")
     _button(app, "Now").click().run()
     after = db.get_athlete(event["id"], athlete["id"])

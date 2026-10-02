@@ -127,6 +127,9 @@ def test_actual_strip_is_separate_from_pod_and_resets_after_a_bout(wheel_scenari
     _strip(app, alex, "D4")
     keyed(app.button, _live_key(alex, "call_in_hole")).click().run()
     assert database.get_athlete(events[0]["id"], alex["id"])["live_location"] == "D4"
+    # The normal mobile card offers forward call states only. Cancelling a
+    # call is a deliberate correction in the compact Modify call controls.
+    keyed(app.toggle, _live_key(alex, "modify_v")).set_value(True).run()
     keyed(app.button, _live_key(alex, "call_waiting")).click().run()
     saved = database.get_athlete(events[0]["id"], alex["id"])
     assert saved["call_status"] == "waiting" and saved["live_location"] == ""

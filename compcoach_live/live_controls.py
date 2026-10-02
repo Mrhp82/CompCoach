@@ -7,6 +7,7 @@ bout's live strip without a coach explicitly entering that strip.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape
 from typing import Any
 
 import streamlit as st
@@ -27,15 +28,18 @@ def _notice(success: bool, message: str) -> None:
     st.session_state["de_fast_refresh"] = True
 
 
-def _strip_value(key: str) -> str:
-    return str(st.session_state.get(key) or "").strip().upper()
+def _strip_value(key: str, default: str = "") -> str:
+    # A known strip's editor is hidden in the compact view. Widget cleanup
+    # must not turn that saved location into an empty new call/coverage.
+    return str(st.session_state.get(key, default) or "").strip().upper()
 
 
 def _save_call(db: Any, event_id: str, athlete_id: str, actor: str,
-               version: int, status: str, strip_key: str) -> None:
+               version: int, status: str, strip_key: str,
+               default_strip: str = "") -> None:
     # The version comes from the rendered button, before any fresh board read.
     # Two phones cannot silently overwrite each other's more recent updates.
-    location = "" if status == "waiting" else _strip_value(strip_key)
+    location = "" if status == "waiting" else _strip_value(strip_key, default_strip)
     try:
         db.report_call(event_id, athlete_id, status=status, location=location,
                        actor=actor, expected_version=version)
@@ -51,9 +55,10 @@ def _save_call(db: Any, event_id: str, athlete_id: str, actor: str,
 def _mark_busy(db: Any, event_id: str, athlete_id: str, actor: str,
                version: int, strip_key: str, coach: str | None,
                coach_key: str | None = None,
-               coach_versions: dict[str, int] | None = None) -> None:
+               coach_versions: dict[str, int] | None = None,
+               default_strip: str = "") -> None:
     selected = str(st.session_state.get(coach_key) or "") if coach_key else str(coach or "")
-    location = _strip_value(strip_key)
+    location = _strip_value(strip_key, default_strip)
     if not selected.strip():
         _notice(False, "Choose the coach who is with this athlete.")
         return
@@ -152,7 +157,7 @@ def render_live_controls(db: Any, event: dict, role: str, actor: str,
                          athlete: dict, *, key_prefix: str,
                          coach_states: list[dict] | None = None,
                          meet_state: dict | None = None) -> None:
-    """One-tap call updates and coverage, including not-yet-called athletes."""
+    """Compact forward call updates, with corrections and coverage available."""
     event_id = str(event["id"])
     athlete_id = str(athlete["id"])
     version = int(athlete["version"])
@@ -179,20 +184,41 @@ def render_live_controls(db: Any, event: dict, role: str, actor: str,
     default_strip = str(athlete.get("live_location") or "")
     if athlete.get("phase") != "de" and not default_strip:
         default_strip = str(athlete.get("source_strip") or "")
-    if athlete.get("call_status", "waiting") != "waiting" and not default_strip:
-        label = dict(CALL_ACTIONS).get(athlete["call_status"], "Call reported")
+    status = str(athlete.get("call_status") or "waiting")
+    labels = dict(CALL_ACTIONS)
+    st.markdown(
+        f"<div class='cc-live-action-title'><b>{escape(str(athlete['name']))}</b> · "
+        f"Actual strip <b>{escape(default_strip or 'TBD')}</b></div>",
+        unsafe_allow_html=True,
+    )
+    call_age = f" · {_elapsed(athlete.get('reported_at'))}" if athlete.get("reported_at") else ""
+    st.caption(f"{labels.get(status, 'Not called')}{call_age}")
+    editing = st.toggle("Modify call", key=f"{base}_modify_v{version}")
+    if status != "waiting" and not default_strip:
+        label = labels.get(status, "Call reported")
         st.warning(f"{label} · **Actual strip to confirm**. Add it when known.")
-    st.text_input("📍 **Actual bout strip** (optional)", value=default_strip,
-                  placeholder="e.g. C3 · leave blank if unknown",
-                  help="You can save the call without knowing the strip. To mark a coach busy with the athlete, enter the actual strip first.",
-                  max_chars=16, key=strip_key)
-    left, right = st.columns(2)
-    for index, (status, label) in enumerate(CALL_ACTIONS):
-        with (left if index % 2 == 0 else right):
-            st.button(label, key=f"{base}_call_{status}", width="stretch",
-                      type="primary" if athlete.get("call_status") == status else "secondary",
-                      on_click=_save_call,
-                      args=(db, event_id, athlete_id, actor, version, status, strip_key))
+    if editing or not default_strip:
+        st.text_input("📍 **Actual bout strip** (optional)", value=default_strip,
+                      placeholder="e.g. C3 · leave blank if unknown",
+                      help="You can save the call without knowing the strip. To mark a coach busy with the athlete, enter the actual strip first.",
+                      max_chars=16, key=strip_key)
+    forward = {
+        "waiting": ("in_hole", "on_deck", "now"),
+        "in_hole": ("on_deck", "now"),
+        "on_deck": ("now",),
+        "now": (),
+    }
+    choices = tuple(key for key, _ in CALL_ACTIONS) if editing else forward.get(status, forward["waiting"])
+    if choices:
+        with st.container(key=f"cc_call_actions_{base}"):
+            columns = st.columns(len(choices))
+            for column, next_status in zip(columns, choices):
+                with column:
+                    st.button(labels[next_status], key=f"{base}_call_{next_status}", width="stretch",
+                              type="primary" if editing and status == next_status else "secondary",
+                              on_click=_save_call,
+                              args=(db, event_id, athlete_id, actor, version, next_status,
+                                    strip_key, default_strip))
 
     coach_versions = {
         str(row["coach_name"]): int(row.get("version") or 0)
@@ -205,20 +231,26 @@ def render_live_controls(db: Any, event: dict, role: str, actor: str,
         coach_key = f"{base}_cover_coach_v{version}"
         initial = coverage if coverage in coaches else actor if actor in coaches else ""
         options = ["", *coaches]
-        st.selectbox("Coach with athlete", options, index=options.index(initial),
-                     format_func=lambda name: name or "Choose a coach", key=coach_key)
-        st.button("Mark coach busy", key=f"{base}_busy", width="stretch",
-                  on_click=_mark_busy,
-                  args=(db, event_id, athlete_id, actor, version, strip_key, None,
-                        coach_key, coach_versions))
+        with st.expander("Coach coverage", expanded=False):
+            st.selectbox("Coach with athlete", options, index=options.index(initial),
+                         format_func=lambda name: name or "Choose a coach", key=coach_key)
+            st.button("Mark coach busy", key=f"{base}_busy", width="stretch",
+                      on_click=_mark_busy,
+                      args=(db, event_id, athlete_id, actor, version, strip_key, None,
+                            coach_key, coach_versions, default_strip))
+        if role == "admin" and actor in coaches and not coverage:
+            st.button(f"I’m with {athlete['name']}", key=f"{base}_self_busy",
+                      width="stretch", type="primary", on_click=_mark_busy,
+                      args=(db, event_id, athlete_id, actor, version, strip_key,
+                            actor, None, coach_versions, default_strip))
     elif not coverage:
         # Physical coverage is already confirmed once covered_by is set. A
         # pending takeover is only a promise, so it still needs this button.
         # Keep call/location edits and release available for the busy coach.
-        st.button(f"I’m with {athlete['name']}", key=f"{base}_busy", width="stretch",
+        st.button(f"I’m with {athlete['name']}", key=f"{base}_busy", width="stretch", type="primary",
                   on_click=_mark_busy,
                   args=(db, event_id, athlete_id, actor, version, strip_key, actor,
-                        None, coach_versions))
+                        None, coach_versions, default_strip))
 
     if coverage and (role in {"admin", "coordinator"} or coverage == actor):
         st.button("Not covered", key=f"{base}_release", width="stretch",

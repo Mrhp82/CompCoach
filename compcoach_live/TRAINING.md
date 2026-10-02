@@ -1,5 +1,7 @@
 # CompCoach — esercitazione autonoma
 
+Istruzioni per CompCoach Live v0.10.6.
+
 L'amministratore attiva il link una volta, lo condivide e può disinteressarsi
 dell'esercitazione. Non deve interpretare il coordinatore, generare chiamate o
 far avanzare i coach.
@@ -35,7 +37,7 @@ modificano gli stessi dati operativi usati in gara, all'interno della pratica.
 
 Il percorso passa dalla lettura degli assegnamenti ai gironi, ai risultati,
 alla disponibilità, poi alle dirette per pod, alle chiamate e alla copertura.
-Comprende richieste d'aiuto, prese in carico, risultati Won/Lost, Bye e un
+Comprende richieste d'aiuto, prese in carico, risultati WIN/LOST, Bye e un
 assalto AFM contro AFM, fino alla chiusura della giornata fittizia. L'app
 prepara autonomamente le importazioni, gli assegnamenti e i semafori di fase.
 
@@ -44,6 +46,14 @@ accettare ogni atleta. **My Group** mostra il lavoro assegnato;
 **Team situation** mostra la situazione condivisa, i coach disponibili e le
 richieste urgenti. Il nuovo nome sostituisce l'etichetta **Live** della
 pagina condivisa; i collegamenti già salvati continuano a funzionare.
+
+Le chiamate salvate da **My Group** o **Team situation** valgono per entrambe
+le schermate e fanno proseguire l'esercitazione senza ripetere il comando.
+Puoi usare anche **Report athlete location → Publish update**. Nella lezione
+della chiamata lascia la pedana vuota se non la conosci; una pedana confermata
+è consentita. Questo comportamento condiviso vale anche durante la gara
+reale. Le lezioni che chiedono di visitare una schermata richiedono ancora
+quella visita.
 
 Esempi di situazioni simulate:
 
@@ -73,12 +83,76 @@ assalti già accettati, coperti o conclusi. Il coach può così riprendere la
 lezione dopo una pausa senza intervento dell'amministratore.
 
 Quando il coach è fisicamente con un atleta, **My Group** mostra subito il
-nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **Won / Lost**
+nome, la pedana e il tempo trascorso. Nelle dirette i pulsanti **WIN / LOST**
 sono nella stessa barra: il risultato si salva con un tap e libera il coach.
 Il pulsante **I’m with [atleta]** non compare più quando la presenza è già
 registrata. Le chiamate successive hanno priorità sugli atleti non ancora
 chiamati. Le vittorie in diretta fanno ruotare la coda; i gironi conclusi e
 gli atleti Out restano nelle sezioni dedicate.
+
+**WINS / WIN** sono evidenziati in verde e **LOSSES / LOST** in rosso.
+Nei risultati dei gironi i numeri **0–6** hanno pulsanti della stessa
+dimensione, disposti in quattro colonne su due righe. Seleziona vittorie e
+sconfitte e salva il riepilogo; nelle dirette basta **WIN** oppure **LOST**.
+
+Nelle dirette lo stato attuale è una nota, con nome dell'atleta e pedana vicino
+ai comandi. La riga delle chiamate mostra solo le azioni successive:
+
+| Stato attuale | Pulsanti nella vista compatta |
+| --- | --- |
+| Not called | In the hole · On deck · Now |
+| In the hole | On deck · Now |
+| On deck | Now |
+| Now | Nessuna chiamata precedente; restano copertura e risultato. |
+
+Per correggere una chiamata o tornare indietro, attiva **Modify call**: compaiono
+tutti gli stati e il campo della pedana. Una pedana già salvata non occupa un
+campo nella vista compatta; se manca, il campo resta subito visibile. Le
+chiamate si possono salvare anche senza conoscere la pedana.
+
+Il pulsante principale **I’m with [atleta]** registra la presenza e scompare
+dopo il salvataggio. Anche Admin, quando è uno dei coach presenti, può usarlo
+direttamente per sé. La selezione di un altro maestro resta nella sezione
+chiusa **Coach coverage**. La riga **WIN / LOST** precede **More actions**, dove
+trovi Bye, richiesta d'aiuto e segnalazione di mancato coaching.
+
+## Esercizio facoltativo: assalto senza coaching
+
+Se un atleta ha tirato un assalto senza assistenza, **⚠️ Missed coaching** sulla
+sua scheda salva la segnalazione con un tap; nelle dirette lo trovi aprendo
+**More actions**. È indipendente dal risultato: non inserisce una
+vittoria o una sconfitta e non manda l'atleta Out. Registra il risultato con i
+comandi normali. Un Bye non è un assalto disputato.
+
+La sezione **⚠️ Missed coaching · N athletes**, inizialmente chiusa in
+**Team situation**, conserva le segnalazioni. Per un episodio relativo a un
+atleta già Out o con gironi conclusi, scegli **Athlete to report**, aggiungi
+se vuoi **Notes (optional)** e premi **Record missed coaching**. Non serve
+scrivere una spiegazione prima di segnalare l'episodio.
+
+Per ogni episodio viene salvata la situazione registrata **nel momento della
+segnalazione**, considerando tutti gli eventi della giornata:
+
+| Stato registrato | Significato |
+| --- | --- |
+| Copertura fisica | Il coach risulta con un atleta; sono conservati atleta, evento e pedana registrata. |
+| Presa in carico | Il coach ha riservato la copertura, senza aver ancora registrato l'arrivo fisico. |
+| Disponibilità dichiarata | Il coach si è segnato disponibile e non ha una copertura o presa in carico attiva. |
+| Disponibilità non confermata | Nell'app non risulta una disponibilità dichiarata; questo non dimostra che il coach fosse libero o occupato. |
+
+Questa fotografia non ricostruisce la disponibilità durante l'assalto e non
+stabilisce automaticamente perché mancasse un coach. Le note possono
+aggiungere il contesto osservato, per esempio chiamate sovrapposte o
+informazioni arrivate tardi. Se la segnalazione è errata, usa **Mark report as
+incorrect**, eventualmente con una nota di correzione: resta una traccia della
+modifica, senza cambiare risultati o assegnamenti.
+
+In gara, dopo la chiusura della giornata, Admin può consultare gli episodi da
+**Home → History → Open read-only archive**. In allenamento puoi provare la
+segnalazione, le note e la correzione su un atleta fittizio: è un esercizio
+facoltativo e non è richiesto per far avanzare il percorso autonomo.
+
+## Riprendere o ricominciare la pratica
 
 Ogni coach può entrare in un momento diverso. Chi arriva dopo comincia
 dall'inizio. Conserva l'URL personale che si apre dopo l'ingresso: ricaricandolo
@@ -121,12 +195,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.5.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.6.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.5.zip
+unzip -o CompCoach_Live_v0.10.6.zip
 cd compcoach_live
 bash launch.sh
 ```

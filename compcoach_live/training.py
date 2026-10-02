@@ -34,7 +34,7 @@ TRAINING_STEPS = [
     {"title": "Complete pool results", "instruction": "Record wins and losses for one athlete, for example 3 / 3. You can also practice marking an athlete absent.", "hint": "Completed athletes collapse below your current work. The other fictional pools finish after your result."},
     {"title": "Tell the team you are available", "instruction": "Your pools are finished. Tap I’m available to help and check the shared available-coach banner.", "hint": "Free coaches can be reassigned across events. The virtual coordinator will prepare your next assignment."},
     {"title": "Direct Elimination pod plan", "instruction": "Open Team situation to inspect the new DE pod assignments and green DE signal. Then return to My Group.", "hint": "DE coaches are equal. A pod reference such as A1 identifies the calling pod, not the actual bout strip."},
-    {"title": "Call without a confirmed strip", "instruction": "A parent reports {primary_name} On deck. Save On deck or In the hole while leaving Actual bout strip empty.", "hint": "The call saves with Actual strip to confirm and its timestamp. Do not invent a strip from the pod."},
+    {"title": "Call without a confirmed strip", "instruction": "A parent reports {primary_name} On deck. Save the call from My Group or Team situation. If the actual strip is unknown, leave it empty; a confirmed strip is also allowed.", "hint": "On deck, In the hole and Now save with their timestamp. An unknown strip is shown as Actual strip to confirm. Do not invent a strip from the pod."},
     {"title": "Actual strip and physical coverage", "instruction": "{primary_name} is now called on C3. Add the actual strip and tap I’m with {primary_name}.", "hint": "Coverage starts your busy timer and removes you from Available. Your other called athletes may need another coach."},
     {"title": "Busy coach: a colleague may help", "instruction": "You are with {primary_name}. Watch the alternate-coverage notice for {secondary_name}; a virtual colleague may respond after a short delay. When your bout finishes, record Won or Lost for {primary_name}.", "hint": "Some replays include a colleague who covers the other athlete; some leave the alert unresolved. Request help when needed. Your result releases you."},
     {"title": "A sudden call: take over", "instruction": "You are free. A new Now, On deck or In the hole call will appear for {secondary_name}, whose assigned coach is busy. Tap I’ll take over.", "hint": "A takeover immediately reserves you, even before physical coverage. Your name disappears from Available."},
@@ -57,7 +57,7 @@ _GUIDE_ACTIONS = (
     "Record one athlete’s pool wins and losses in My Group, for example 3 / 3.",
     "Tap I’m available to help.",
     "Open Team situation to check your DE pod plan. Then return to My Group.",
-    "Save On deck or In the hole for {primary_name}, without an actual strip.",
+    "Save {primary_name}’s call. Leave the actual strip empty if unknown; a known strip is allowed.",
     "Set {primary_name}’s actual strip to C3, then tap I’m with {primary_name}.",
     "You are with {primary_name}. When the bout finishes, tap Won or Lost.",
     "When {secondary_name}’s sudden call appears, tap I’ll take over.",
@@ -758,6 +758,9 @@ def _completed(conn: Any, row: dict, state: dict) -> bool:
     primary,secondary = _target(athletes,state,"primary_id"),_target(athletes,state,"secondary_id")
     person = state.get("participants",{}).get(state["learner"],{})
     views = person.get("stage_views",{}).get(str(stage),[])
+
+    # Only lessons about seeing a particular screen depend on navigation.
+    # Calls, coverage and results below use shared saved data, never the view.
     if stage == 0:
         return "My Group" in views
     if stage in {1,5}:
@@ -769,7 +772,11 @@ def _completed(conn: Any, row: dict, state: dict) -> bool:
     if stage == 4:
         return bool(conn.execute("SELECT 1 FROM coach_availability WHERE meet_id = ? AND coach_name = ? AND is_available = 1",(meet_id,state["learner"])).fetchone())
     if stage == 6:
-        return bool(primary and primary["call_status"] != "waiting" and not primary["live_location"] and any(a["action"] == "live_update" and a["athlete_id"] == primary["id"] for a in actions))
+        return bool(primary and primary["call_status"] != "waiting" and any(
+            action["action"] == "live_update" and action["athlete_id"] == primary["id"]
+            and _load(action["new_json"],{}).get("call_status") in {"on_deck","in_hole","now"}
+            for action in actions
+        ))
     if stage == 7:
         return bool(primary and primary["covered_by"] == state["learner"] and primary["live_location"])
     if stage == 8:
