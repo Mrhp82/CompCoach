@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS meets (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS training_sessions (
+    meet_id TEXT PRIMARY KEY REFERENCES meets(id) ON DELETE CASCADE,
+    source_meet_id TEXT REFERENCES meets(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    stage INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS meet_events (
     meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
     event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,

@@ -257,6 +257,18 @@ class CompCoachDB:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS training_sessions (
+                    meet_id TEXT PRIMARY KEY REFERENCES meets(id) ON DELETE CASCADE,
+                    source_meet_id TEXT REFERENCES meets(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    stage INTEGER NOT NULL DEFAULT 0,
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    created_by TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 0
+                );
+
                 CREATE TABLE IF NOT EXISTS meet_events (
                     meet_id TEXT NOT NULL REFERENCES meets(id) ON DELETE CASCADE,
                     event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
@@ -746,7 +758,10 @@ class CompCoachDB:
 
                 # Populate the durable coach directory and retain the legacy
                 # JSON lists as a compatibility projection for the current UI.
-                for meet in conn.execute("SELECT * FROM meets").fetchall():
+                for meet in conn.execute(
+                    "SELECT * FROM meets WHERE NOT EXISTS "
+                    "(SELECT 1 FROM training_sessions WHERE training_sessions.meet_id = meets.id)"
+                ).fetchall():
                     competition_id = str(meet["competition_id"] or "")
                     coach_names = [
                         str(value).strip()
@@ -1015,6 +1030,12 @@ class CompCoachDB:
         actor: str,
         replace_day: bool = False,
     ) -> None:
+        # Exercise rosters include virtual peers. They live only in the
+        # exercise JSON projections, never in the season's coach directory.
+        if conn.execute(
+            "SELECT 1 FROM training_sessions WHERE meet_id = ?", (meet_id,)
+        ).fetchone():
+            return
         now = utc_now()
         clean_coaches = list(
             dict.fromkeys(
@@ -1087,7 +1108,7 @@ class CompCoachDB:
         coach_name: str,
         *,
         now: str,
-    ) -> tuple[str, str, str, str | None, int]:
+    ) -> tuple[str | None, str, str, str | None, int]:
         membership = conn.execute(
             """
             SELECT meets.id AS meet_id, meets.competition_id
@@ -1099,6 +1120,23 @@ class CompCoachDB:
         ).fetchone()
         if membership is None:
             raise CompCoachError("Competition group not found.")
+        if conn.execute(
+            "SELECT 1 FROM training_sessions WHERE meet_id = ?",
+            (membership["meet_id"],),
+        ).fetchone():
+            # Normal assignment and coverage controls still record exercise
+            # history, while fictional staff do not become real coach records.
+            coach = conn.execute(
+                "SELECT id FROM coaches WHERE normalized_name = ?",
+                (_normalize_name(coach_name),),
+            ).fetchone()
+            return (
+                str(coach["id"]) if coach is not None else None,
+                str(membership["meet_id"]),
+                str(membership["competition_id"] or ""),
+                None,
+                0,
+            )
         coach = cls._ensure_coach_record(conn, coach_name, now=now)
         coach_id = str(coach["id"])
         competition_id = str(membership["competition_id"] or "")
@@ -1325,11 +1363,46 @@ class CompCoachDB:
             actor=actor, source=source,
         )
 
+    @staticmethod
+    def _assert_training_access(conn: sqlite3.Connection, meet_id: str) -> None:
+        """Reject stale exercise writes even before a refresh expires its board."""
+
+        session = conn.execute(
+            "SELECT * FROM training_sessions WHERE meet_id = ?", (meet_id,)
+        ).fetchone()
+        if session is None:
+            return
+        sessions = [session]
+        state = _load(session["state_json"], {})
+        hub_id = state.get("hub_meet_id") if isinstance(state, dict) else None
+        if hub_id and hub_id != meet_id:
+            hub = conn.execute(
+                "SELECT * FROM training_sessions WHERE meet_id = ?", (hub_id,)
+            ).fetchone()
+            if hub is None:
+                raise EventLockedError("Practice access has ended. Ask an Admin to activate another exercise.")
+            sessions.append(hub)
+        for current in sessions:
+            if current["status"] not in {"running", "paused"}:
+                raise EventLockedError("This practice exercise has ended and is now read-only.")
+            current_state = _load(current["state_json"], {})
+            expires_at = current_state.get("expires_at") if isinstance(current_state, dict) else None
+            if not expires_at:
+                continue
+            try:
+                expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                raise EventLockedError("Practice access could not be verified. Ask an Admin to activate another exercise.") from None
+            if datetime.fromisoformat(utc_now()) >= expires:
+                raise EventLockedError("The practice link has expired. Ask an Admin to activate another exercise.")
+
     def _assert_open(self, conn: sqlite3.Connection, event_id: str) -> None:
         row = conn.execute(
             """
             SELECT events.status AS event_status, meets.status AS meet_status,
-                   competitions.status AS competition_status
+                   competitions.status AS competition_status, meets.id AS meet_id
             FROM events
             LEFT JOIN meet_events ON meet_events.event_id = events.id
             LEFT JOIN meets ON meets.id = meet_events.meet_id
@@ -1346,6 +1419,8 @@ class CompCoachDB:
             or row["competition_status"] == "closed"
         ):
             raise EventLockedError("This competition is locked and is now read-only.")
+        if row["meet_id"]:
+            self._assert_training_access(conn, str(row["meet_id"]))
 
     @staticmethod
     def _assert_competition_open(
@@ -1368,6 +1443,7 @@ class CompCoachDB:
             raise EventLockedError("This competition group is locked and is now read-only.")
         if row["competition_id"]:
             self._assert_competition_open(conn, row["competition_id"])
+        self._assert_training_access(conn, meet_id)
         return row
 
     @staticmethod
@@ -4128,7 +4204,9 @@ class CompCoachDB:
         athlete_id: str | None = None,
         coach_id: str | None = None,
         include_closed: bool = True,
+        include_training: bool = False,
     ) -> list[dict[str, Any]]:
+        """Return saved coaching assignments, excluding exercises by default."""
         clauses: list[str] = []
         params: list[Any] = []
         for column, value in (
@@ -4143,6 +4221,11 @@ class CompCoachDB:
                 params.append(value)
         if not include_closed:
             clauses.append("ended_at IS NULL")
+        if not include_training:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM training_sessions "
+                "WHERE training_sessions.meet_id = coach_assignment_history.meet_id)"
+            )
         sql = "SELECT * FROM coach_assignment_history"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)

@@ -32,6 +32,7 @@ try:
         create_database,
     )
     from compcoach_live.coach_setup import render_coach_management
+    from compcoach_live.coach_picker import canonical_coach_names, setup_coach_options
     from compcoach_live.de_assignment_ui import (
         render_de_individual_assignments,
         render_de_pod_assignments,
@@ -50,6 +51,8 @@ try:
     from compcoach_live.de_rotation import ordered_de_athletes
     from compcoach_live.de_corrections_ui import render_de_result_corrections
     from compcoach_live.schedule_setup import render_competition_schedule
+    from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
+    from compcoach_live.training_ui import render_training_panel, render_training_start
     from compcoach_live.storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -64,6 +67,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
     from backend_config import SETTING_NAMES, create_asset_store, create_database
     from coach_setup import render_coach_management
+    from coach_picker import canonical_coach_names, setup_coach_options
     from de_assignment_ui import render_de_individual_assignments, render_de_pod_assignments
     from de_bout_controls import render_de_bouts, render_athlete_bout_badge
     from de_bouts import list_de_bouts
@@ -79,6 +83,8 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from de_rotation import ordered_de_athletes
     from de_corrections_ui import render_de_result_corrections
     from schedule_setup import render_competition_schedule
+    from training import get_training, join_training, list_training_sessions, tick_training
+    from training_ui import render_training_panel, render_training_start
     from storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -87,7 +93,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.10.1"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -621,6 +627,11 @@ def competition_is_closed(event: dict) -> bool:
 
 
 def allowed_actors(event: dict, role: str) -> list[str]:
+    practice = get_training(db, event["id"])
+    if practice and role == "coach" and practice.get("learner"):
+        # Virtual colleagues make the exercise realistic; they are not identities
+        # a participant can select to bypass their own course.
+        return [str(practice["learner"])]
     if role == "admin":
         people = ["Carmine", *event["coordinators"], *event["active_coaches"]]
     elif role == "coordinator":
@@ -748,6 +759,9 @@ def render_landing() -> None:
         if getattr(db, "backend", "sqlite") == "postgres"
         else "💻 Local test database"
     )
+    practice_sessions = list_training_sessions(db)
+    practice_ids = {session["meet_id"] for session in practice_sessions}
+    existing_events = [event for event in existing_events if event["id"] not in practice_ids]
     competitions = {parent["id"]: parent for parent in db.list_competitions()}
     active = [
         event for event in existing_events
@@ -775,6 +789,12 @@ def render_landing() -> None:
             render_home_day_card(event, competitions.get(event.get("competition_id"), {}))
 
     with st.expander("➕ New competition", expanded=not existing_events):
+        directory = db.list_coaches()
+        directory_names = [coach["name"] for coach in directory]
+        coach_options = setup_coach_options(directory, DEFAULT_COACHES)
+        default_coaches = [name for name in canonical_coach_names(DEFAULT_COACHES, directory_names) if name in coach_options]
+        coordinator_options = setup_coach_options(directory, [*DEFAULT_COORDINATORS, *coach_options])
+        default_coordinators = [name for name in canonical_coach_names(DEFAULT_COORDINATORS, directory_names) if name in coordinator_options]
         with st.form("create_event"):
             name = st.text_input("Competition or travel day", "AFM Competition")
             location = st.text_input(
@@ -796,9 +816,16 @@ def render_landing() -> None:
                 placeholder="Example: Cadet Foil",
                 help="Leave this blank if the event schedule is not ready yet.",
             )
-            coaches = st.multiselect("Coaches present", DEFAULT_COACHES, default=DEFAULT_COACHES)
+            coaches = st.multiselect(
+                "Coaches present", coach_options, default=default_coaches,
+                accept_new_options=True,
+                placeholder="Select coaches or type a new name",
+            )
+            st.caption("To add a coach here, type the name and select Add. New names are saved when you create the competition.")
             coordinators = st.multiselect(
-                "Coordinators", list(dict.fromkeys([*DEFAULT_COORDINATORS, *DEFAULT_COACHES])), default=DEFAULT_COORDINATORS
+                "Coordinators", coordinator_options, default=default_coordinators,
+                accept_new_options=True,
+                placeholder="Select coordinators or type a new name",
             )
             timezone_name = st.selectbox("Competition timezone", TIMEZONES)
             create = st.form_submit_button("Create competition", width="stretch")
@@ -806,6 +833,12 @@ def render_landing() -> None:
             if competition_end_date < competition_date:
                 st.error("Last competition day cannot be before the first day.")
                 return
+            coaches = canonical_coach_names(coaches, directory_names)
+            coordinators = canonical_coach_names(coordinators, directory_names)
+            selected_names = canonical_coach_names([*coaches, *coordinators])
+            for person in directory:
+                if not person["is_active"] and person["name"] in selected_names:
+                    db.create_coach(person["name"])
             event = db.create_meet(
                 name,
                 coaches,
@@ -836,6 +869,24 @@ def render_landing() -> None:
                 render_home_day_card(
                     event, competitions.get(event.get("competition_id"), {}), archive=True
                 )
+
+    with st.expander("🧪 Practice · coach training", expanded=False):
+        st.caption("Practice uses a separate shared board and fictional athletes. Real competitions stay unchanged.")
+        for session in practice_sessions:
+            if session.get("kind") == "run" or session.get("learner"):
+                continue
+            practice = db.get_meet(session["meet_id"])
+            if not practice:
+                continue
+            with st.container(border=True):
+                st.markdown(f"**{esc(practice['name'])}**")
+                st.caption(str(session.get("status", "running")).replace("_", " ").title())
+                if st.button("Open practice", key=f"open_practice_{practice['id']}", width="stretch"):
+                    set_open_event(practice, actor=str(st.session_state.get("home_admin_actor") or ""))
+        render_training_start(
+            db, None, str(st.session_state.get("home_admin_actor") or "Admin"),
+            open_callback=lambda practice: set_open_event(practice),
+        )
 
 
 def render_home_day_card(event: dict, competition: dict, *, archive: bool = False) -> None:
@@ -3426,6 +3477,11 @@ def lifecycle_fragment(
         st.rerun(scope="app")
         return
 
+    if get_training(db, meet_id):
+        # Training owns its lifecycle and keeps the same shared link on restart.
+        # It must never follow a real competition day or show an ordinary archive.
+        return
+
     intentional_admin_archive = role == "admin" and query_value("archive") == "1"
     if intentional_admin_archive:
         return
@@ -3455,6 +3511,34 @@ def lifecycle_fragment(
         day_status and current.get("day_status") != day_status
     ):
         st.rerun(scope="app")
+
+
+def reopen_training_run(meet: dict, role: str, actor: str) -> None:
+    # Widget state resets at the beginning of the next full render, before
+    # Streamlit instantiates any navigation or athlete-filter widgets.
+    st.session_state[f"training_reset_view_{meet['id']}_{role}"] = True
+    set_open_event(meet, role, actor=actor)
+
+
+@st.fragment(run_every=5)
+def training_fragment(meet_id: str, role: str, actor: str, rendered_version: int) -> None:
+    nav_key = f"{role}_nav_{meet_id}"
+    view = str(st.session_state.get(f"nav_choice_{nav_key}") or st.session_state.get(nav_key) or ("Live" if role == "coordinator" else "My Group"))
+    metadata = tick_training(db, meet_id, actor=actor, view=view)
+    if not metadata:
+        return
+    if int(metadata.get("version", 0)) != rendered_version:
+        st.rerun(scope="app")
+        return
+    if metadata.get("is_hub"):
+        metadata = get_training(db, meet_id) or metadata
+    meet = db.get_meet(meet_id)
+    if meet:
+        render_training_panel(
+            db, meet, metadata, role, actor,
+            open_callback=lambda practice: reopen_training_run(practice, role, actor),
+            home_callback=lambda: set_open_home(meet, actor),
+        )
 
 
 @st.fragment(run_every=5)
@@ -3514,6 +3598,15 @@ def render_live(event: dict, role: str, actor: str) -> None:
 
 
 def generate_whatsapp(event: dict, coach_link: str) -> str:
+    practice = get_training(db, event["id"])
+    if practice:
+        return "\n".join([
+            "🧪 *COMPCOACH PRACTICE*", "",
+            "Open the link and choose your name. Your own practice course starts or resumes automatically.",
+            "The app plays the coordinator and virtual colleagues. Practice pools, live calls, coverage, help and DE results using the normal controls.",
+            "No Admin supervision needed. You can practice again after finishing.",
+            f"Practice access ends: {practice.get('expires_at', '')}", "", coach_link,
+        ]).strip()
     timestamp = datetime.now(ZoneInfo(event["timezone"])).strftime("%I:%M %p").lstrip("0")
     lines = [
         f"🏆 *{event['name'].upper()}*",
@@ -3639,16 +3732,18 @@ def generate_whatsapp(event: dict, coach_link: str) -> str:
 
 def render_share(event: dict) -> None:
     st.subheader("Share")
+    practice = get_training(db, event["id"])
     coach = public_link(event, "coach")
     coordinator = public_link(event, "coordinator")
-    st.markdown("**Coach Live Board**")
+    st.markdown("**Coach practice link**" if practice else "**Coach Live Board**")
     st.code(coach, language=None)
     if coach.startswith("http"):
         st.link_button("Open Coach Board", coach, width="stretch")
-    st.markdown("**Coordinator Board**")
-    st.code(coordinator, language=None)
-    if coordinator.startswith("http"):
-        st.link_button("Open Coordinator Board", coordinator, width="stretch")
+    if not practice:
+        st.markdown("**Coordinator Board**")
+        st.code(coordinator, language=None)
+        if coordinator.startswith("http"):
+            st.link_button("Open Coordinator Board", coordinator, width="stretch")
     if not coach.startswith("http"):
         st.warning(
             "Shared links are not active yet. Set COMPCOACH_PUBLIC_URL to "
@@ -3656,7 +3751,7 @@ def render_share(event: dict) -> None:
         )
 
     st.divider()
-    st.markdown("#### WhatsApp schedule")
+    st.markdown("#### WhatsApp practice invitation" if practice else "#### WhatsApp schedule")
     message = generate_whatsapp(event, coach)
     st.code(message, language=None)
     st.link_button(
@@ -3664,7 +3759,7 @@ def render_share(event: dict) -> None:
         f"https://wa.me/?text={quote(message)}",
         width="stretch",
     )
-    st.caption("This is a static snapshot. The shared Live Board remains the current source during the competition.")
+    st.caption("Each coach has a separate course. This link is for practice only." if practice else "This is a static snapshot. The shared Live Board remains the current source during the competition.")
 
 
 ACTION_LABELS = {
@@ -4162,8 +4257,9 @@ def render_settings_hub(event: dict, actor: str) -> None:
 def render_admin_setup(event: dict, actor: str, *, scheduled_day: bool = False) -> None:
     """Render setup tools, including safe pre-work for a future day."""
 
-    options = ["Import", "Assign", "Events", "Settings"]
-    if not scheduled_day:
+    practice = get_training(db, event["id"])
+    options = ["Assign", "Activity", "Training"] if practice else ["Import", "Assign", "Events", "Settings", "Training"]
+    if not scheduled_day and not practice:
         options.insert(3, "Activity")
     setup = select_nav(options, f"admin_setup_nav_{event['id']}")
     if setup in {"Import", "Assign"}:
@@ -4193,14 +4289,33 @@ def render_admin_setup(event: dict, actor: str, *, scheduled_day: bool = False) 
         render_event_management(event)
     elif setup == "Activity":
         render_activity(event, actor, "admin")
+    elif setup == "Training":
+        if practice:
+            st.info("The autonomous practice task and access information are at the top of this page. Coaches use their own course; no instructor needs to advance it.")
+        else:
+            render_training_start(
+                db, event, actor,
+                open_callback=lambda training_meet: set_open_event(training_meet, actor=actor),
+                link_callback=lambda practice_meet: public_link(practice_meet, "coach"),
+            )
     else:
         render_settings_hub(event, actor)
 
 
 def render_event(event: dict, role: str) -> None:
+    if st.session_state.pop(f"training_reset_view_{event['id']}_{role}", False):
+        clear_actor_state(event["id"], role)
+        nav_key = f"{role}_nav_{event['id']}"
+        st.session_state[nav_key] = "My Group"
+        st.session_state[f"nav_choice_{nav_key}"] = "My Group"
+    practice = get_training(db, event["id"])
+    if practice:
+        practice = tick_training(db, event["id"]) or practice
+    if practice:
+        event = db.get_meet(event["id"]) or event
     archived_view = bool(event.get("ended_at"))
     lifecycle_fragment(event["id"], role, archived_view, str(event.get("day_status") or ""))
-    if archived_view and role != "admin":
+    if archived_view and role != "admin" and not practice:
         render_header(event, role)
         st.subheader("⏸️ No active competition")
         if competition_is_closed(event):
@@ -4213,6 +4328,8 @@ def render_event(event: dict, role: str) -> None:
         return
 
     render_header(event, role)
+    if practice and not rollover_actor(event, role):
+        st.warning("🧪 TRAINING · Practice only. This board uses fictional athletes and does not change your real competition.")
     if role == "admin" and st.button(
         "← Home",
         key=f"admin_home_{event['id']}",
@@ -4231,6 +4348,37 @@ def render_event(event: dict, role: str) -> None:
     actor = require_actor(event, role)
     if not actor:
         return
+    if practice:
+        training_fragment(event["id"], role, actor, int(practice.get("version", 0)))
+        if practice.get("is_hub") or practice.get("kind") == "hub":
+            if role == "coach" and practice.get("status") == "running" and not practice.get("expired"):
+                try:
+                    learner_meet = join_training(db, event["id"], actor)
+                    set_open_event(learner_meet, "coach", actor=actor)
+                except CompCoachError as exc:
+                    show_error(exc)
+            elif role == "admin":
+                render_share(event)
+                source = db.get_meet(str(practice.get("source_meet_id") or ""))
+                if source and st.button("← Back to competition", key=f"training_source_{event['id']}", width="stretch"):
+                    set_open_event(source, actor=actor)
+            return
+        if practice.get("status") in {"completed", "stopped"} or practice.get("expired"):
+            if practice.get("status") == "completed" and not practice.get("expired"):
+                with st.expander("Saved practice results"):
+                    for child in db.list_meet_events(event["id"]):
+                        st.markdown(f"**{esc(child['name'])}**")
+                        for athlete in db.list_athletes(child["id"]):
+                            pool_result = (
+                                f"Pools {athlete['pool_wins']} W / {athlete['pool_losses']} L · "
+                                if athlete.get("pool_wins") is not None else ""
+                            )
+                            state = "Out" if athlete["active_state"] == "eliminated" else "Still in"
+                            st.markdown(f"**{esc(athlete['name'])}**")
+                            st.caption(f"{pool_result}DE {athlete.get('de_wins', 0)} win(s) · {athlete.get('de_byes', 0)} bye(s) · {state}")
+            if role == "admin":
+                render_share(event)
+            return
     if scheduled_day:
         st.warning(
             "Future-day setup · only Admin can see this page. Imports and coach "

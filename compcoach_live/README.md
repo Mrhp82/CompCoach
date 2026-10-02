@@ -11,7 +11,24 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.9.5
+## Included in v0.10.1
+
+### New in v0.10.1
+
+- Add a new coach directly in **New competition → Coaches present** or **Practice → Coaches taking part**: type the name in the dropdown and select **Add**, then submit the form. Coordinators also support direct entry.
+- New competition offers the saved general coach directory and saves new names for future competitions. Existing names keep their directory spelling and are deduplicated across case and extra spaces.
+- New practice names stay in the exercise, allowing fictional demo coaches without adding them to the real staff directory.
+
+### New in v0.10.0
+
+- Admin can activate **autonomous practice** for **7 or 14 days** from **Setup → Training** or **Home → Practice** and share one dedicated coach link. Admin does not need to supervise, advance scenarios, or remain connected.
+- Each coach chooses their name and receives a complete personal course. Returning to the same practice link resumes that course; coaches who join later start from the beginning. Other coaches' actions do not skip their lessons.
+- The app plays the coordinator and virtual colleagues. It prepares pool and DE assignments, starts phases, requests help, calls athletes, and reacts to the learner's coverage and results. Delayed coverage can arrive or remain unavailable; sudden calls vary between Now, On deck and In the hole. A free learner can receive a new assignment across events.
+- The normal My Group and merged Live commands are used throughout. Tasks and hints guide pool results, optional absence, availability, calls with unknown strips, physical coverage, takeovers, emergency help, the DE result wheel, byes and same-club bouts through the end of the fictional day.
+- Completed coaches can tap **Practice again** during the activation period. Replays change coverage and call scenarios. Progress and scheduled simulation events survive reloads and application restarts.
+- Practice has separate competitions, event IDs, tokens and fictional athletes. It is excluded from ordinary competition History and season assignment history. Virtual staff do not enter the real coach directory. Expired or ended practice also rejects writes sent from stale screens.
+
+See [TRAINING.md](TRAINING.md) for activation and operating instructions. The practice period controls access; the application must still be hosted on a running service. This feature does not keep a Codespace awake.
 
 ### New in v0.9.5
 
