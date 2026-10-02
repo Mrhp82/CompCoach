@@ -11,7 +11,13 @@ CompCoach answers two operational questions:
 It stores no bout scores, tableau, seed, or ranking. Only the pool W/L summary,
 DE outcome, and optional manually linked AFM-versus-AFM opponent are kept.
 
-## Included in v0.10.2
+## Included in v0.10.3
+
+### New in v0.10.3
+
+- Real competitions and practice use one lightweight five-second change check. Idle checks do not redraw athlete cards, navigation or input controls. Calls, help requests, availability, results and competition-day changes still refresh all open boards.
+- Repeated reads are reused only within the current render. Every new interaction and automatic check reads current storage; writes retain the existing concurrency guards.
+- Autonomous practice runs the scenario engine for coach actions, a new lesson/view, due simulated events or access termination. Observation bookkeeping alone does not restart the page; elapsed-time labels update once per minute when needed.
 
 ### New in v0.10.2
 
@@ -401,10 +407,14 @@ them to today's operational board.
 
 ## Refresh and phone notifications
 
-The live board and lifecycle check refresh every five seconds while the
-Streamlit browser session is active. Help requests already appear as prominent
-in-app alerts with requester, athlete, location, acknowledgement, and elapsed
-time.
+One lightweight check runs every five seconds while the Streamlit browser
+session is active, for both real competitions and practice. It refreshes the
+board only when operational data or visible practice instructions change;
+unchanged checks leave cards and draft inputs alone. Elapsed-time labels update
+once per minute while calls, coverage, availability or phase timers are visible.
+Help requests appear as prominent in-app alerts with requester, athlete,
+location, acknowledgement, and elapsed time. A transient polling connection
+failure preserves the current board and retries at the next check.
 
 This version does **not** yet provide operating-system push notifications. A
 phone that is locked, suspended, offline, or has the browser session stopped

@@ -69,18 +69,23 @@ o un processo esterno che invia chiamate. Se il telefono va in standby, al
 ritorno l'app aggiorna il percorso e gli eventi maturati. Non introduce
 notifiche push a telefono bloccato.
 
+Da v0.10.3 un unico controllo leggero verifica i cambiamenti ogni cinque
+secondi, sia nella pratica sia nella gara reale. Se nulla cambia, la schermata
+non viene ridisegnata. Gli scenari in attesa continuano a scattare al momento
+previsto; i tempi trascorsi visibili si aggiornano ogni minuto.
+
 **Il servizio che ospita l'app deve restare acceso e raggiungibile.** Il
 periodo di 7/14 giorni riguarda l'accesso, non avvia o mantiene sveglio un
 Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.2.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.3.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.2.zip
+unzip -o CompCoach_Live_v0.10.3.zip
 cd compcoach_live
 bash launch.sh
 ```

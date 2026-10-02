@@ -12,6 +12,8 @@ import html
 import json
 import os
 import re
+import time
+from functools import wraps
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -53,6 +55,8 @@ try:
     from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
     from compcoach_live.training_ui import render_training_panel, render_training_start
+    from compcoach_live.read_cache import RenderReads
+    from compcoach_live.refresh import training_hub_status, training_needs_tick, training_visible_revision
     from compcoach_live.storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -85,6 +89,8 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from schedule_setup import render_competition_schedule
     from training import get_training, join_training, list_training_sessions, tick_training
     from training_ui import render_training_panel, render_training_start
+    from read_cache import RenderReads
+    from refresh import training_hub_status, training_needs_tick, training_visible_revision
     from storage import (
         NO_CHANGE,
         CompCoachDB,
@@ -93,7 +99,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.2"
+APP_VERSION = "0.10.3"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -262,7 +268,7 @@ def get_assets():
 
 
 try:
-    db = get_db()
+    db = RenderReads(get_db())
     asset_store = get_assets()
 except (CompCoachError, AssetStoreError) as exc:
     st.error(f"CompCoach cannot start: {exc}")
@@ -3468,18 +3474,12 @@ def rollover_actor(event: dict, role: str) -> str:
     return stored if stored in options else ""
 
 
-@st.fragment(run_every=5)
 def lifecycle_fragment(
     meet_id: str, role: str, archived_view: bool, day_status: str = ""
 ) -> None:
     current = db.get_meet(meet_id)
     if not current:
         st.rerun(scope="app")
-        return
-
-    if get_training(db, meet_id):
-        # Training owns its lifecycle and keeps the same shared link on restart.
-        # It must never follow a real competition day or show an ordinary archive.
         return
 
     intentional_admin_archive = role == "admin" and query_value("archive") == "1"
@@ -3520,18 +3520,24 @@ def reopen_training_run(meet: dict, role: str, actor: str) -> None:
     set_open_event(meet, role, actor=actor)
 
 
-@st.fragment(run_every=5)
-def training_fragment(meet_id: str, role: str, actor: str, rendered_version: int) -> None:
+def current_training_view(meet_id: str, role: str) -> str:
     nav_key = f"{role}_nav_{meet_id}"
-    view = str(st.session_state.get(f"nav_choice_{nav_key}") or st.session_state.get(nav_key) or ("Live" if role == "coordinator" else "My Group"))
-    metadata = tick_training(db, meet_id, actor=actor, view=view)
-    if not metadata:
-        return
-    if int(metadata.get("version", 0)) != rendered_version:
-        st.rerun(scope="app")
-        return
-    if metadata.get("is_hub"):
-        metadata = get_training(db, meet_id) or metadata
+    # A navigation click updates the widget before the full script runs.
+    return str(st.session_state.get(nav_key) or st.session_state.get(f"nav_choice_{nav_key}") or ("Live" if role == "coordinator" else "My Group"))
+
+
+def render_snapshot(function):
+    """Each manual fragment rerun reads current data; full renders share reads."""
+    @wraps(function)
+    def render(*args, **kwargs):
+        with db.snapshot():
+            return function(*args, **kwargs)
+    return render
+
+
+@st.fragment
+@render_snapshot
+def training_fragment(meet_id: str, role: str, actor: str, metadata: dict) -> None:
     meet = db.get_meet(meet_id)
     if meet:
         render_training_panel(
@@ -3541,7 +3547,8 @@ def training_fragment(meet_id: str, role: str, actor: str, rendered_version: int
         )
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def help_fragment(event_id: str, role: str, actor: str) -> None:
     event = db.get_meet(event_id)
     if event and event["status"] == "open":
@@ -3549,14 +3556,16 @@ def help_fragment(event_id: str, role: str, actor: str) -> None:
         render_help_alerts(event, role, actor, athletes)
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def available_coaches_fragment(meet_id: str) -> None:
     event = db.get_meet(meet_id)
     if event:
         render_available_coaches_banner(event)
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def busy_coaches_fragment(meet_id: str, role: str, actor: str) -> None:
     consume_de_fast_notice()
     meet = db.get_meet(meet_id)
@@ -3565,32 +3574,92 @@ def busy_coaches_fragment(meet_id: str, role: str, actor: str) -> None:
         render_busy_coach_board(db, meet, event_by_id, athletes, role, actor, key_prefix="global")
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def phase_fragment(event_id: str, role: str, actor: str) -> None:
     event = db.get_meet(event_id)
     if event:
         render_phase_status(event, role, actor)
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def live_fragment(event_id: str, role: str, actor: str) -> None:
     event = db.get_meet(event_id)
     if event:
         render_live_board(event, role, actor)
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def my_group_fragment(event_id: str, role: str, actor: str) -> None:
     event = db.get_meet(event_id)
     if event:
         render_my_group(event, role, actor)
 
 
-@st.fragment(run_every=5)
+@st.fragment
+@render_snapshot
 def team_plan_fragment(event_id: str, actor: str) -> None:
     event = db.get_meet(event_id)
     if event:
         render_team_plan(event, actor)
+
+
+@st.fragment(run_every=5)
+def live_refresh_fragment(
+    meet_id: str, role: str, actor: str, rendered_revision: str | None,
+    rendered_training: str, practice: bool, clock_bucket: int | None, epoch: int,
+) -> None:
+    """Poll without rebuilding cards, fields or navigation when unchanged.
+
+    This fragment owns no board content: returning early cannot clear an
+    athlete list. The ordinary UI fragments rerun only on taps or a material
+    update. There is one automatic timer for training and real competitions.
+    """
+    initial_key = f"live_refresh_epoch_{meet_id}_{role}"
+    if st.session_state.get(initial_key) != epoch:
+        st.session_state[initial_key] = epoch
+        return  # The full render already read and processed current data.
+    try:
+        revision = db.get_meet_revision(meet_id)
+        changed = revision != rendered_revision
+        if practice:
+            metadata = get_training(db, meet_id)
+            hub_status = training_hub_status(db, metadata)
+            view = current_training_view(meet_id, role)
+            if training_needs_tick(metadata, actor, view, board_changed=changed, hub_status=hub_status):
+                metadata = tick_training(db, meet_id, actor=actor, view=view)
+                db.invalidate()
+                revision = db.get_meet_revision(meet_id)
+                changed = revision != rendered_revision
+            changed = changed or training_visible_revision(metadata) != rendered_training
+        if changed or (clock_bucket is not None and int(time.time() // 60) != clock_bucket):
+            st.rerun(scope="app")
+    except CompCoachError:
+        # A transient connection failure leaves the current board and drafts
+        # intact. The next heartbeat retries instead of entering a rerun loop.
+        error_key = f"live_refresh_error_{meet_id}"
+        now = time.monotonic()
+        if now - float(st.session_state.get(error_key, 0)) >= 60:
+            st.session_state[error_key] = now
+            st.toast("Live update temporarily unavailable. Retrying automatically.")
+
+
+def has_live_timers(meet_id: str) -> bool:
+    events, athletes, _ = load_meet_context(meet_id)
+    if any(
+        row.get("help_requested_at") or row.get("covered_at") or row.get("takeover_at")
+        or (row.get("reported_at") and row.get("call_status") != "waiting")
+        for row in athletes if is_operational_athlete(row)
+    ):
+        return True
+    if any(row.get("is_available") and row.get("available_since") for row in db.list_coach_availability(meet_id)):
+        return True
+    return any(
+        state.get("started") and state.get("changed_at")
+        for event in events for state in db.get_phase_states(event["id"]).values()
+    )
 
 
 def render_live(event: dict, role: str, actor: str) -> None:
@@ -4308,13 +4377,37 @@ def render_event(event: dict, role: str) -> None:
         nav_key = f"{role}_nav_{event['id']}"
         st.session_state[nav_key] = "My Group"
         st.session_state[f"nav_choice_{nav_key}"] = "My Group"
+    revision = db.get_meet_revision(event["id"])
+    # Anchor this render before reading its cards/configuration. Authentication
+    # may have loaded the meet just before another device changed it.
+    db.invalidate()
+    event = db.get_meet(event["id"]) or event
     practice = get_training(db, event["id"])
-    if practice:
-        practice = tick_training(db, event["id"]) or practice
+    revision_key = f"live_revision_{event['id']}_{role}"
+    known_actor = rollover_actor(event, role)
+    if training_needs_tick(
+        practice, known_actor, current_training_view(event["id"], role),
+        board_changed=st.session_state.get(revision_key) != revision,
+        hub_status=training_hub_status(db, practice),
+    ):
+        practice = tick_training(db, event["id"], actor=known_actor, view=current_training_view(event["id"], role)) or practice
+        db.invalidate()
+        revision = db.get_meet_revision(event["id"])
     if practice:
         event = db.get_meet(event["id"]) or event
     archived_view = bool(event.get("ended_at"))
-    lifecycle_fragment(event["id"], role, archived_view, str(event.get("day_status") or ""))
+    if not practice:
+        lifecycle_fragment(event["id"], role, archived_view, str(event.get("day_status") or ""))
+    st.session_state[revision_key] = revision
+    clocks = bool(
+        known_actor and not archived_view and event.get("day_status", "active") == "active"
+        and (not practice or practice.get("status") == "running")
+        and has_live_timers(event["id"])
+    )
+    live_refresh_fragment(
+        event["id"], role, known_actor, revision, training_visible_revision(practice),
+        bool(practice), int(time.time() // 60) if clocks else None, time.monotonic_ns(),
+    )
     if archived_view and role != "admin" and not practice:
         render_header(event, role)
         st.subheader("⏸️ No active competition")
@@ -4349,7 +4442,7 @@ def render_event(event: dict, role: str) -> None:
     if not actor:
         return
     if practice:
-        training_fragment(event["id"], role, actor, int(practice.get("version", 0)))
+        training_fragment(event["id"], role, actor, practice)
         if practice.get("is_hub") or practice.get("kind") == "hub":
             if role == "coach" and practice.get("status") == "running" and not practice.get("expired"):
                 try:
@@ -4464,4 +4557,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with db.snapshot():
+        main()

@@ -12,6 +12,7 @@ without changing the rest of the application.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import secrets
@@ -2265,6 +2266,103 @@ class CompCoachDB:
                 (meet_id,),
             ).fetchone()
         return self._meet_dict(row)
+
+    def get_meet_revision(self, meet_id: str) -> str | None:
+        """Read one stable fingerprint for the complete operational day.
+
+        This is a single read-only statement on SQLite and PostgreSQL. It
+        checks small configuration rows and record revisions without loading
+        athlete cards or taking the shared writer lock. A missing day returns
+        ``None``. Training observation/progress is intentionally excluded;
+        its visible instructions have their own lifecycle in the caller.
+
+        Exact record identities make deletions visible, and athlete versions
+        catch changes that share the same second. Sibling day state is included
+        so an open coach page follows a newly activated competition day.
+        """
+
+        day_fields = (
+            "id", "competition_id", "name", "timezone", "status",
+            "active_coaches_json", "coordinators_json", "admin_token",
+            "coordinator_token", "coach_token", "ended_at", "ended_by",
+            "prepared_from_meet_id", "competition_date", "day_status",
+            "updated_at",
+        )
+        event_scope = (
+            "JOIN meet_events AS membership ON membership.event_id = record.event_id "
+            "JOIN target ON target.id = membership.meet_id"
+        )
+        groups = (
+            ("day", "meets AS record JOIN target ON record.id = target.id "
+             "OR record.competition_id = target.competition_id", day_fields),
+            ("competition", "competitions AS record JOIN target "
+             "ON record.id = target.competition_id", (
+                 "id", "name", "status", "ended_at", "ended_by", "location",
+                 "start_date", "end_date", "timezone", "logo_path",
+                 "strip_map_path", "updated_at",
+             )),
+            ("event", "events AS record JOIN meet_events AS membership "
+             "ON membership.event_id = record.id JOIN target "
+             "ON target.id = membership.meet_id", (
+                 "id", "name", "timezone", "status", "active_coaches_json",
+                 "coordinators_json", "admin_token", "coordinator_token",
+                 "coach_token", "source_url", "updated_at", "membership.sort_order",
+             )),
+            ("athlete", "athletes AS record " + event_scope,
+             ("id", "event_id", "version")),
+            ("phase", "phase_states AS record " + event_scope,
+             ("event_id", "phase", "started", "changed_at", "changed_by", "version")),
+            ("wave", "pool_waves AS record " + event_scope, (
+                "event_id", "wave_key", "label", "sort_order", "is_active",
+                "is_visible", "activated_at", "activated_by", "version",
+            )),
+            ("pod", "pod_assignments AS record " + event_scope, (
+                "event_id", "phase", "pod", "main_coach", "side_coach",
+                "coaches_json", "updated_at",
+            )),
+            ("bout", "de_bouts AS record " + event_scope,
+             ("id", "event_id", "version")),
+            ("availability", "coach_availability AS record JOIN target "
+             "ON target.id = record.meet_id", (
+                 "coach_name", "is_available", "available_since", "updated_at",
+                 "updated_by", "version",
+             )),
+            ("presence", "day_coach_presence AS record JOIN target "
+             "ON target.id = record.meet_id", (
+                 "coach_id", "presence_status", "home_event_id", "updated_at", "updated_by",
+             )),
+            ("competition_coach", "competition_coaches AS record JOIN target "
+             "ON target.competition_id = record.competition_id",
+             ("coach_id", "role", "added_at")),
+            ("coach", "coaches AS record CROSS JOIN target",
+             ("id", "name", "is_active", "updated_at")),
+        )
+        width = max(len(fields) for _, _, fields in groups)
+        column_names = ["entity_kind", *(f"field_{index}" for index in range(width))]
+        selections = []
+        for kind, scope, fields in groups:
+            expressions = [f"'{kind}' AS entity_kind"]
+            for index in range(width):
+                field = fields[index] if index < len(fields) else None
+                value = (
+                    f"CAST({field if '.' in field else 'record.' + field} AS TEXT)"
+                    if field else "CAST(NULL AS TEXT)"
+                )
+                expressions.append(f"{value} AS field_{index}")
+            selections.append("SELECT " + ", ".join(expressions) + " FROM " + scope)
+        sql = (
+            "WITH target AS (SELECT * FROM meets WHERE id = ?) "
+            + " UNION ALL ".join(selections)
+        )
+        with self._connection() as conn:
+            rows = conn.execute(sql, (meet_id,)).fetchall()
+        if not rows:
+            return None
+        records = [[row[column] for column in column_names] for row in rows]
+        # Sorting encoded records also normalizes differing NULL-order defaults
+        # between SQLite and PostgreSQL; the same data has the same revision.
+        records.sort(key=_dump)
+        return hashlib.sha256(_dump(records).encode("utf-8")).hexdigest()
 
     def get_prepared_successor(self, source_meet_id: str) -> dict[str, Any] | None:
         """Return the direct next-day meet prepared from ``source_meet_id``."""
