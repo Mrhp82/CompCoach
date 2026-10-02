@@ -1,6 +1,1 @@
-streamlit
-pandas
-matplotlib
-requests
-beautifulsoup4
-
+-r compcoach_live/requirements.txt
