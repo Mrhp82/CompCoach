@@ -12,7 +12,13 @@ It stores no bout scores, imported DE bracket, seed, or ranking. It keeps the
 pool W/L summary, DE outcomes and byes, an optional starting tableau size,
 and optional manually linked AFM-versus-AFM opponents.
 
-## Included in v0.10.7
+## Included in v0.10.8
+
+### New in v0.10.8
+
+- The Pool-result practice guide explicitly asks the learner to return to **My Group**, open **Add pool result**, choose **Wins / Losses**, then tap **Save pool result**. This follows the previous **Team situation** lesson without leaving the learner on a screen that lacks their personal result editor.
+- The operational athlete list in **Team situation** is grouped by assigned coach. Pools use the Main coach, or Side when no Main is assigned. Equal DE coach groups have one shared label, such as **Coaches Alex · Taylor**, and each athlete card appears once. A coach group may span several events; event tags, current calls and the result wheel remain visible within it. Global availability and urgent alerts still cover the whole competition day.
+- An active DE athlete's **More actions** includes an optional AFM-opponent shortcut. The current athlete is already selected: choose **Opponent** from active, unpaired DE athletes in the same event, optionally enter **Round (optional)**, then tap **Review AFM pairing → Confirm AFM pairing**. The shared **AFM vs AFM** section remains available. A saved pairing is visible on both cards; recording **Won / Lost** for either athlete saves both outcomes together.
 
 ### New in v0.10.7
 
@@ -367,7 +373,7 @@ From the directory containing the release archive, use a new/empty destination
 so an older working copy is not overwritten:
 
 ```bash
-unzip -o CompCoach_Live_v0.10.7.zip
+unzip -o CompCoach_Live_v0.10.8.zip
 cd compcoach_live
 sudo apt-get update
 sudo apt-get install -y libgl1

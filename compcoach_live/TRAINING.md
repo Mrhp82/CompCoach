@@ -1,6 +1,6 @@
 # CompCoach — esercitazione autonoma
 
-Istruzioni per CompCoach Live v0.10.7.
+Istruzioni per CompCoach Live v0.10.8.
 
 L'amministratore attiva il link una volta, lo condivide e può disinteressarsi
 dell'esercitazione. Non deve interpretare il coordinatore, generare chiamate o
@@ -46,6 +46,22 @@ accettare ogni atleta. **My Group** mostra il lavoro assegnato;
 **Team situation** mostra la situazione condivisa, i coach disponibili e le
 richieste urgenti. Il nuovo nome sostituisce l'etichetta **Live** della
 pagina condivisa; i collegamenti già salvati continuano a funzionare.
+
+Nella lezione dei risultati dei gironi, torna in **My Group** dopo aver
+consultato **Team situation**. Sulla scheda dell'atleta indicato apri
+**Add pool result**, premi **3** sotto **Wins** e **3** sotto **Losses**, quindi
+**Save pool result**. Puoi scegliere un altro riepilogo valido. La guida
+indica esplicitamente questo ritorno alla schermata personale.
+
+La lista operativa di **Team situation** è raggruppata per coach assegnato.
+Nei gironi il gruppo usa il Main coach, oppure il Side se manca il Main.
+Nelle dirette un gruppo con più coach alla pari ha un'unica intestazione,
+per esempio **Coaches Alex · Taylor**: la scheda di ciascun atleta compare
+una sola volta. Gli atleti senza assegnamento sono in **Unassigned**.
+Uno stesso gruppo può contenere atleti di eventi diversi, sempre riconoscibili
+dall'etichetta dell'evento. Chiamate urgenti e ruota dei risultati restano
+ordinate dentro i gruppi; disponibilità e richieste d'aiuto continuano a
+essere visibili per tutta la giornata, anche tra eventi diversi.
 
 Le chiamate salvate da **My Group** o **Team situation** valgono per entrambe
 le schermate e fanno proseguire l'esercitazione senza ripetere il comando.
@@ -135,6 +151,25 @@ di ciascun evento. Con un tabellone iniziale di 256 e tre turni passati,
 l'app può mostrare **T32**. Senza quel dato mostra Bye, vittorie e stato
 della chiamata, senza attribuire un turno ufficiale del tabellone.
 
+## Segnalare un assalto AFM contro AFM
+
+Quando due atleti AFM devono affrontarsi in diretta, puoi segnalarlo dalla
+scheda di uno dei due in **My Group** oppure **Team situation**:
+
+1. Apri **More actions** sulla scheda dell'atleta.
+2. In **Opponent** scegli l'altro atleta. La scheda seleziona già il primo;
+   gli avversari proposti sono atleti DE attivi dello stesso evento senza
+   un altro abbinamento aperto.
+3. Se vuoi, compila **Round (optional)**, per esempio `T32`.
+4. Premi **Review AFM pairing**, controlla i due nomi e premi
+   **Confirm AFM pairing**. **Cancel AFM pairing** annulla questa scelta prima del salvataggio.
+
+Il comando è facoltativo e resta anche la sezione condivisa **AFM vs AFM**.
+Una volta salvato, l'avversario appare sulle schede di entrambi. Registrando
+**Won / Lost** per uno dei due, l'app aggiorna insieme vincitore e sconfitto:
+non occorre inserire separatamente il secondo risultato. Nella lezione
+dell'esercitazione usa i nomi indicati dalla guida.
+
 ## Esercizio facoltativo: assalto senza coaching
 
 Se un atleta ha tirato un assalto senza assistenza, **⚠️ Missed coaching** sulla
@@ -214,12 +249,12 @@ Codespace. Il salvataggio in Supabase, da solo, non ospita l'interfaccia.
 
 ## Installazione dell'aggiornamento nel Codespace
 
-Carica `CompCoach_Live_v0.10.7.zip` in `/workspaces/CompCoach`.
+Carica `CompCoach_Live_v0.10.8.zip` in `/workspaces/CompCoach`.
 Ferma l'app precedente con Ctrl+C, poi esegui:
 
 ```bash
 cd /workspaces/CompCoach
-unzip -o CompCoach_Live_v0.10.7.zip
+unzip -o CompCoach_Live_v0.10.8.zip
 cd compcoach_live
 bash launch.sh
 ```

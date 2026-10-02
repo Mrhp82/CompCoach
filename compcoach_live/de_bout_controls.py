@@ -79,6 +79,137 @@ def render_athlete_bout_badge(db: Any, event_id: str, athlete: dict, *, bouts: l
         return
 
 
+def _pairing_notice(success: bool, message: str) -> None:
+    st.session_state["de_fast_notice"] = (success, message)
+    st.session_state["de_fast_refresh"] = True
+
+
+def _review_athlete_pairing(
+    pending_key: str, opponent_key: str, round_key: str,
+    athlete_id: str, actor: str, versions: dict[str, int],
+) -> None:
+    """Capture the form's rendered revisions before the next board read."""
+    opponent_id = str(st.session_state.get(opponent_key) or "")
+    if not opponent_id or opponent_id == athlete_id or opponent_id not in versions:
+        _cancel(pending_key)
+        _pairing_notice(False, "Choose a different active DE opponent in this event.")
+        return
+    _queue(pending_key, {
+        "a": athlete_id, "b": opponent_id, "actor": actor,
+        "round": str(st.session_state.get(round_key) or "").strip(),
+        "versions": [versions[athlete_id], versions[opponent_id]],
+    })
+
+
+def _confirm_athlete_pairing(db: Any, event_id: str, pending_key: str, snapshot: dict) -> None:
+    """The reviewed pair never adopts newer athlete data on confirmation."""
+    _cancel(pending_key)
+    try:
+        event = db.get_event(event_id)
+        meet = db.get_meet_for_event(event_id) or event
+        if (
+            not event or event.get("status") != "open" or meet.get("status") != "open"
+            or meet.get("day_status", "active") != "active" or meet.get("ended_at")
+        ):
+            raise CompCoachError("This competition day is read-only.")
+        create_de_bout(
+            db, event_id, snapshot["a"], snapshot["b"], actor=snapshot["actor"],
+            round_label=snapshot["round"],
+            expected_a_version=snapshot["versions"][0],
+            expected_b_version=snapshot["versions"][1],
+        )
+    except (CompCoachError, TypeError, ValueError) as exc:
+        _pairing_notice(False, str(exc))
+    else:
+        _pairing_notice(True, "AFM vs AFM pairing saved. Every coach can see the opponent.")
+
+
+def render_athlete_pairing_control(
+    db: Any, event: dict, actor: str, athlete: dict, *,
+    key_prefix: str = "personal", bouts: list[dict] | None = None,
+) -> None:
+    """Optional opponent shortcut anchored to this card's DE athlete."""
+    event_id, athlete_id = str(event["id"]), str(athlete["id"])
+    base = f"{key_prefix}_athlete_pair_{athlete_id}"
+    pending_key = f"{base}_pending"
+    if athlete.get("phase") != "de" or athlete.get("event_id") != event_id:
+        _cancel(pending_key)
+        return
+    event_bouts = bouts if bouts is not None else list_de_bouts(db, event_id)
+    event_bouts = [bout for bout in event_bouts if bout.get("event_id") == event_id]
+    paired = next((bout for bout in event_bouts if bout["status"] == "pending"
+                   and athlete_id in {bout["athlete_a_id"], bout["athlete_b_id"]}), None)
+    if paired:
+        _cancel(pending_key)
+        opponent = paired["athlete_b"] if athlete_id == paired["athlete_a_id"] else paired["athlete_a"]
+        label = f" · {paired['round_label']}" if paired.get("round_label") else ""
+        st.caption(f"⚔ AFM vs AFM · {opponent['name']}{label} · Pairing already recorded")
+        return
+    meet = db.get_meet_for_event(event_id) or event
+    if (
+        not _active_de(athlete) or not str(actor or "").strip()
+        or event.get("status") != "open" or meet.get("status") != "open"
+        or meet.get("day_status", "active") != "active" or meet.get("ended_at")
+    ):
+        _cancel(pending_key)
+        return
+    occupied = {
+        participant for bout in event_bouts if bout["status"] == "pending"
+        for participant in (bout["athlete_a_id"], bout["athlete_b_id"])
+    }
+    candidates = {
+        row["id"]: row for row in sorted(db.list_athletes(event_id), key=lambda row: row["name"].casefold())
+        if row.get("event_id") == event_id and _active_de(row) and row["id"] not in occupied
+    }
+    pending = st.session_state.get(pending_key)
+    if pending:
+        pair = [candidates.get(pending["a"]), candidates.get(pending["b"])]
+        if (
+            pending["a"] != athlete_id or pending["actor"] != actor
+            or any(row is None for row in pair)
+            or [int(row["version"]) for row in pair] != pending["versions"]
+        ):
+            _cancel(pending_key)
+            pending = None
+            st.info("The athletes changed. Select the pairing again after reviewing the latest information.")
+    st.caption(f"AFM vs AFM · {athlete['name']}")
+    if pending:
+        a, b = candidates[pending["a"]], candidates[pending["b"]]
+        label = f" · {pending['round']}" if pending["round"] else ""
+        st.warning(f"Pair {a['name']} vs {b['name']}{label}? Results will be recorded for both together.")
+        confirm, cancel = st.columns(2)
+        with confirm:
+            st.button(
+                "Confirm AFM pairing", key=f"{base}_confirm", width="stretch",
+                on_click=_confirm_athlete_pairing,
+                args=(db, event_id, pending_key, dict(pending)),
+            )
+        with cancel:
+            st.button("Cancel AFM pairing", key=f"{base}_cancel", width="stretch", on_click=_cancel, args=(pending_key,))
+        return
+    opponents = {row_id: row for row_id, row in candidates.items() if row_id != athlete_id}
+    if athlete_id not in candidates or not opponents:
+        st.caption("No unpaired active DE opponent is available in this event.")
+        return
+    opponent_key, round_key = f"{base}_opponent", f"{base}_round"
+    options = ["", *opponents]
+    if st.session_state.get(opponent_key, "") not in options:
+        st.session_state[opponent_key] = ""
+    versions = {row_id: int(row["version"]) for row_id, row in opponents.items()}
+    versions[athlete_id] = int(athlete["version"])
+    with st.form(f"{base}_form"):
+        st.selectbox(
+            "Opponent", options, key=opponent_key,
+            format_func=lambda value: opponents[value]["name"] if value else "Choose an opponent",
+        )
+        st.text_input("Round (optional)", placeholder="T64, T32, semifinal…", max_chars=40, key=round_key)
+        st.form_submit_button(
+            "Review AFM pairing", key=f"{base}_review", width="stretch",
+            on_click=_review_athlete_pairing,
+            args=(pending_key, opponent_key, round_key, athlete_id, actor, versions),
+        )
+
+
 def _render_create(db: Any, event: dict, actor: str, bouts: list[dict], prefix: str) -> None:
     event_id = event["id"]
     occupied = {

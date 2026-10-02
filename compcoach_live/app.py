@@ -41,7 +41,9 @@ try:
         render_de_individual_assignments,
         render_de_pod_assignments,
     )
-    from compcoach_live.de_bout_controls import render_de_bouts, render_athlete_bout_badge
+    from compcoach_live.de_bout_controls import (
+        render_de_bouts, render_athlete_bout_badge, render_athlete_pairing_control,
+    )
     from compcoach_live.de_bouts import list_de_bouts
     from compcoach_live.competition_setup import (
         render_competition_branding,
@@ -58,6 +60,7 @@ try:
     from compcoach_live.busy_board import render_busy_coach_board
     from compcoach_live.de_rotation import ordered_de_athletes
     from compcoach_live.de_progress import describe_de_progress
+    from compcoach_live.team_groups import group_team_athletes_by_coach
     from compcoach_live.de_corrections_ui import render_de_result_corrections
     from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
@@ -82,7 +85,9 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from coach_setup import render_coach_management
     from coach_picker import canonical_coach_names, setup_coach_options
     from de_assignment_ui import render_de_individual_assignments, render_de_pod_assignments
-    from de_bout_controls import render_de_bouts, render_athlete_bout_badge
+    from de_bout_controls import (
+        render_de_bouts, render_athlete_bout_badge, render_athlete_pairing_control,
+    )
     from de_bouts import list_de_bouts
     from competition_setup import (
         render_competition_branding,
@@ -99,6 +104,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from busy_board import render_busy_coach_board
     from de_rotation import ordered_de_athletes
     from de_progress import describe_de_progress
+    from team_groups import group_team_athletes_by_coach
     from de_corrections_ui import render_de_result_corrections
     from schedule_setup import render_competition_schedule
     from training import get_training, join_training, list_training_sessions, tick_training
@@ -114,7 +120,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.7"
+APP_VERSION = "0.10.8"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -201,6 +207,7 @@ st.markdown(
       .cc-event-tag {display:inline-block; font-size:.7rem; font-weight:850; color:#3538cd;
                      background:#eef4ff; border-radius:999px; padding:.17rem .45rem;
                      margin-bottom:.28rem;}
+      .cc-team-coach-label {font-size:.85rem; margin:.7rem 0 .4rem;}
       .cc-plan-group {border:1px solid #e4e7ec; border-radius:12px; padding:.55rem .65rem;
                       margin:.4rem 0; background:#fff;}
       .cc-plan-coach {font-weight:900; margin-bottom:.22rem;}
@@ -2597,6 +2604,9 @@ def render_athlete_card(
                                   args=(event["id"], athlete["id"], outcome, actor, snapshot))
             render_athlete_help_control(event, actor, athlete)
             with st.expander(f"More actions · {athlete['name']}", expanded=False):
+                render_athlete_pairing_control(
+                    db, event, actor, athlete, key_prefix=prefix, bouts=afm_bouts,
+                )
                 render_missed_coaching_control(
                     db, event, actor, athlete,
                     key_prefix=prefix, meet_state=meet_state,
@@ -2680,12 +2690,13 @@ def consume_de_fast_notice():
         (st.success if notice[0] else st.error)(notice[1])
 
 
-def render_de_wheel(event, role, actor, athletes, event_by_id, *, personal=False, key_prefix="wheel", bouts_by_event=None, prioritize_calls=False):
+def render_de_wheel(event, role, actor, athletes, event_by_id, *, personal=False, key_prefix="wheel", bouts_by_event=None, prioritize_calls=False, show_heading=True):
     rows = [row for row in athletes if row.get("phase") == "de" and is_operational_athlete(row)]
     if not rows:
         return
-    st.markdown("### Direct Elimination · live queue")
-    st.caption("Live calls come first. Results rotate the waiting queue; pod and actual bout strip stay separate." if prioritize_calls else "Results move to the end of the queue. Pod is the assignment reference; actual strip and call are updated for each bout.")
+    if show_heading:
+        st.markdown("### Direct Elimination · live queue")
+        st.caption("Live calls come first. Results rotate the waiting queue; pod and actual bout strip stay separate." if prioritize_calls else "Results move to the end of the queue. Pod is the assignment reference; actual strip and call are updated for each bout.")
     ordered = ordered_de_athletes(rows)
     coach_states = db.list_coach_availability(event["id"])
     covered = []
@@ -2818,12 +2829,23 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
             st.success(empty_messages[view])
         else:
             st.info(empty_messages[view])
-    for athlete in selected:
-        if athlete.get("phase") == "de" and is_operational_athlete(athlete):
-            continue
-        render_athlete_card(event_by_id[athlete["event_id"]], role, actor, athlete,
-                            personal=False, afm_bouts=bouts_by_event.get(athlete["event_id"], []))
-    render_de_wheel(event, role, actor, selected, event_by_id, key_prefix="live", bouts_by_event=bouts_by_event)
+    for index, group in enumerate(group_team_athletes_by_coach(selected)):
+        with st.container(key=f"team_coach_{event['id']}_{index}"):
+            st.markdown(
+                f"<span class='cc-event-tag cc-team-coach-label'>{esc(group['label'])}</span>",
+                unsafe_allow_html=True,
+            )
+            for athlete in group["athletes"]:
+                if athlete.get("phase") == "de" and is_operational_athlete(athlete):
+                    continue
+                render_athlete_card(
+                    event_by_id[athlete["event_id"]], role, actor, athlete,
+                    personal=False, afm_bouts=bouts_by_event.get(athlete["event_id"], []),
+                )
+            render_de_wheel(
+                event, role, actor, group["athletes"], event_by_id,
+                key_prefix="live", bouts_by_event=bouts_by_event, show_heading=False,
+            )
     render_absent_pool_athletes(
         db, event, actor, athletes, event_by_id, key_prefix="live",
     )

@@ -154,6 +154,54 @@ def _next_guide_instruction(db: Any, metadata: dict[str, Any], instruction: str)
     return instruction
 
 
+def _inline_pairing_guide_context(
+    db: Any, metadata: dict[str, Any], actor: str, current_view: str | None = None,
+) -> tuple[str, str] | None:
+    """Point a reviewed practice pair back to its actual athlete-card control.
+
+    Ordinary practice renders do not read athletes here. Only a matching
+    learner review at the AFM lesson needs its captured revisions checked.
+    """
+    stage = int(metadata.get("stage_index", metadata.get("stage", 0)) or 0)
+    state = metadata.get("state") or {}
+    pair_ids = [str(state.get(field) or "") for field in ("pair_a_id", "pair_b_id")]
+    event_id = str(metadata.get("guide_target_event_id") or "")
+    learner = str(metadata.get("learner") or state.get("learner") or actor)
+    if stage != 14 or not event_id or "" in pair_ids or len(set(pair_ids)) != 2 or actor != learner:
+        return None
+
+    views = [("personal", "My Group"), ("live", "Live")]
+    views.sort(key=lambda entry: entry[1] != current_view)
+    current_rows: dict[str, dict[str, Any] | None] = {}
+    for prefix, view in views:
+        for anchor_id in pair_ids:
+            pending = st.session_state.get(f"{prefix}_athlete_pair_{anchor_id}_pending")
+            if (
+                not isinstance(pending, dict) or pending.get("actor") != learner
+                or pending.get("a") != anchor_id
+                or {str(pending.get("a") or ""), str(pending.get("b") or "")} != set(pair_ids)
+                or not isinstance(pending.get("versions"), (list, tuple))
+                or len(pending["versions"]) != 2
+            ):
+                continue
+            athletes = []
+            for athlete_id in (pending["a"], pending["b"]):
+                if athlete_id not in current_rows:
+                    current_rows[athlete_id] = db.get_athlete(event_id, athlete_id)
+                athletes.append(current_rows[athlete_id])
+            if any(
+                row is None or row.get("event_id") != event_id or row.get("phase") != "de"
+                or row.get("active_state") != "active"
+                or row.get("participation_status", "active") != "active"
+                for row in athletes
+            ):
+                continue
+            if [int(row.get("version") or 0) for row in athletes] != list(pending["versions"]):
+                continue
+            return f"In More actions · {athletes[0]['name']}, tap Confirm AFM pairing.", view
+    return None
+
+
 def _render_persistent_guide(
     stage: int, stage_count: int, title: str, instruction: str, paused: bool, *,
     guide_view: str = "", target_id: str = "", target_name: str = "",
@@ -251,9 +299,13 @@ def render_training_panel(
     )
     if persistent_guide:
         guide_view = str(metadata.get("guide_view") or "")
-        guide_instruction = _next_guide_instruction(
-            db, metadata, str(metadata.get("guide_instruction") or instruction),
-        )
+        inline_context = _inline_pairing_guide_context(db, metadata, actor, current_view)
+        if inline_context is not None:
+            guide_instruction, guide_view = inline_context
+        else:
+            guide_instruction = _next_guide_instruction(
+                db, metadata, str(metadata.get("guide_instruction") or instruction),
+            )
         _render_persistent_guide(
             stage, stage_count, stage_title,
             guide_instruction, status == "paused",
