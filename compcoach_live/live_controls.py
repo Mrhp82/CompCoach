@@ -13,8 +13,10 @@ from typing import Any
 import streamlit as st
 
 try:
+    from compcoach_live.pool_results import pool_is_complete
     from compcoach_live.storage import CompCoachError
 except ModuleNotFoundError:  # pragma: no cover - direct Streamlit script mode
+    from pool_results import pool_is_complete
     from storage import CompCoachError
 
 
@@ -128,7 +130,7 @@ def render_pool_takeover_arrival(
         or athlete.get("active_state") != "active"
         or athlete.get("participation_status", "active") != "active"
         or athlete.get("pool_result_at")
-        or (athlete.get("pool_wins") is not None and athlete.get("pool_losses") is not None)
+        or pool_is_complete(athlete)
         or not actor or athlete.get("takeover_coach") != actor
         or athlete.get("covered_by")
     ):

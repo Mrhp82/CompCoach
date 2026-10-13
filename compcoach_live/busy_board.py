@@ -11,9 +11,11 @@ import streamlit as st
 
 try:
     from compcoach_live.parsers import import_name_noise_reason
+    from compcoach_live.pool_results import pool_is_complete
     from compcoach_live.storage import CompCoachError
 except ModuleNotFoundError:  # pragma: no cover - direct Streamlit script mode
     from parsers import import_name_noise_reason
+    from pool_results import pool_is_complete
     from storage import CompCoachError
 
 
@@ -91,8 +93,7 @@ def _live_row(row: Mapping[str, Any], event_by_id: Mapping[str, Mapping[str, Any
         and not import_name_noise_reason(row.get("name", ""))
         and not (
             row.get("phase") == "pools"
-            and row.get("pool_wins") is not None
-            and row.get("pool_losses") is not None
+            and pool_is_complete(row)
             and not row.get("covered_by")
             and row.get("call_status", "waiting") == "waiting"
             and not row.get("help_requested_at")

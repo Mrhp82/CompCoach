@@ -79,7 +79,7 @@ _GUIDE_VIEWS = (
 _FIRST_NAMES = ["Leo", "Mila", "Eli", "Nora", "Theo", "Lena", "Finn", "Zoe", "Owen", "Iris", "Jude", "Ruby"]
 _SURNAMES = ["RIVERA", "BROOKS", "PARK", "REED", "BELL", "MORRIS", "HAYES", "FOSTER", "KENT", "GRAY", "ELLIS", "SHAW"]
 _MILESTONES = {
-    "pool_result": "Pool result", "participation_absent": "Attendance",
+    "pool_result": "Pool result", "pool_done_unknown": "Pool done · Results unknown", "participation_absent": "Attendance",
     "absent": "Attendance", "help_request": "Help requested",
     "help_acknowledged": "Help acknowledged", "live_update": "Call reported",
     "coverage_start": "Arrival recorded", "claim": "Arrival recorded",
@@ -939,7 +939,7 @@ def _completed(conn: Any, row: dict, state: dict) -> bool:
     if stage == 2:
         return any(action["action"] == "help_acknowledged" and action["athlete_id"] == state.get("primary_id") for action in actions)
     if stage == 3:
-        return any(action["action"] in {"pool_result","participation_absent","absent","participation_withdrawn","withdrawn"}
+        return any(action["action"] in {"pool_result","pool_done_unknown","participation_absent","absent","participation_withdrawn","withdrawn"}
                    and action["athlete_id"] == state.get("primary_id") for action in actions)
     if stage == 4:
         return bool(conn.execute("SELECT 1 FROM coach_availability WHERE meet_id = ? AND coach_name = ? AND is_available = 1",(meet_id,state["learner"])).fetchone())

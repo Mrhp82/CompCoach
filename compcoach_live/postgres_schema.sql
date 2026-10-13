@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS athletes (
     takeover_by TEXT NOT NULL DEFAULT '',
     pool_wins INTEGER,
     pool_losses INTEGER,
+    pool_results_unknown INTEGER NOT NULL DEFAULT 0 CHECK (pool_results_unknown IN (0, 1)),
     pool_result_at TEXT,
     pool_result_by TEXT NOT NULL DEFAULT '',
     de_wins INTEGER NOT NULL DEFAULT 0,
@@ -314,6 +315,8 @@ $compcoach_permissions$;
 
 -- Additive upgrade for existing deployments; keep intentional empty groups.
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS de_coaches_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pool_results_unknown INTEGER NOT NULL DEFAULT 0
+    CHECK (pool_results_unknown IN (0, 1));
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS de_byes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS takeover_coach TEXT NOT NULL DEFAULT '';
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS takeover_at TEXT;

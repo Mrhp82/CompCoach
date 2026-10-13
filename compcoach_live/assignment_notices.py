@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+try:
+    from .pool_results import pool_is_complete
+except ImportError:  # Direct Streamlit script mode.
+    from pool_results import pool_is_complete
+
 
 def assignment_is_actionable(athlete: Mapping[str, Any]) -> bool:
     """An absent, eliminated or completed Pools athlete needs no new receipt."""
@@ -14,7 +19,7 @@ def assignment_is_actionable(athlete: Mapping[str, Any]) -> bool:
         and athlete.get("participation_status", "active") == "active"
         and not (
             athlete.get("phase") == "pools"
-            and athlete.get("pool_result_at")
+            and (athlete.get("pool_result_at") or pool_is_complete(athlete))
         )
     )
 

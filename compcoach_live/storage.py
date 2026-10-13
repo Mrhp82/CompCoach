@@ -27,9 +27,11 @@ from uuid import uuid4
 try:
     from .assignment_notices import assignment_is_actionable
     from .missed_coaching import build_coach_status_snapshot
+    from .pool_results import pool_is_complete, pool_results_are_unknown
 except ImportError:
     from assignment_notices import assignment_is_actionable
     from missed_coaching import build_coach_status_snapshot
+    from pool_results import pool_is_complete, pool_results_are_unknown
 
 NO_CHANGE = object()
 
@@ -150,6 +152,7 @@ ATHLETE_MUTABLE_FIELDS = {
     "takeover_by",
     "pool_wins",
     "pool_losses",
+    "pool_results_unknown",
     "pool_result_at",
     "pool_result_by",
     "de_wins",
@@ -321,6 +324,8 @@ class CompCoachDB:
                     takeover_by TEXT NOT NULL DEFAULT '',
                     pool_wins INTEGER,
                     pool_losses INTEGER,
+                    pool_results_unknown INTEGER NOT NULL DEFAULT 0
+                        CHECK (pool_results_unknown IN (0, 1)),
                     pool_result_at TEXT,
                     pool_result_by TEXT NOT NULL DEFAULT '',
                     de_wins INTEGER NOT NULL DEFAULT 0,
@@ -645,6 +650,7 @@ class CompCoachDB:
                 "participation_status": "TEXT NOT NULL DEFAULT 'active'",
                 "pool_wins": "INTEGER",
                 "pool_losses": "INTEGER",
+                "pool_results_unknown": "INTEGER NOT NULL DEFAULT 0 CHECK (pool_results_unknown IN (0, 1))",
                 "pool_result_at": "TEXT",
                 "pool_result_by": "TEXT NOT NULL DEFAULT ''",
                 "de_wins": "INTEGER NOT NULL DEFAULT 0",
@@ -1543,7 +1549,7 @@ class CompCoachDB:
             or current.get("phase") != new.get("phase")
             or bool(new.get("covered_by"))
             or bool(new.get("takeover_coach"))
-            or source in {"won", "lost", "bye", "out", "pool_result", "de_bout_result", "de_import_not_advanced"}
+            or source in {"won", "lost", "bye", "out", "pool_result", "pool_done_unknown", "de_bout_result", "de_import_not_advanced"}
             or (new.get("phase") == "de" and any(
                 current.get(field) != new.get(field) for field in DE_RESULT_FIELDS
             ))
@@ -4610,7 +4616,8 @@ class CompCoachDB:
                 athlete.call_status, athlete.reported_at, athlete.covered_by,
                 athlete.covered_at, athlete.takeover_coach,
                 athlete.active_state, athlete.participation_status,
-                athlete.pool_result_at, athlete.version AS athlete_version,
+                athlete.pool_result_at, athlete.pool_results_unknown,
+                athlete.pool_wins, athlete.pool_losses, athlete.version AS athlete_version,
                 athlete.main_coach, athlete.side_coach, athlete.de_coaches_json,
                 event.name AS event_name
             FROM assignment_notices AS notice
@@ -4636,6 +4643,7 @@ class CompCoachDB:
                 key: notice[key] for key in (
                     "main_coach", "side_coach", "de_coaches_json",
                     "active_state", "participation_status", "pool_result_at",
+                    "pool_results_unknown", "pool_wins", "pool_losses",
                 )
             }
             athlete["phase"] = notice["athlete_phase"]
@@ -4816,7 +4824,8 @@ class CompCoachDB:
                 athlete.source_strip, athlete.time_text, athlete.live_location,
                 athlete.call_status, athlete.reported_at, athlete.covered_by, athlete.covered_at,
                 athlete.takeover_coach, athlete.active_state, athlete.participation_status,
-                athlete.pool_result_at, event.name AS event_name,
+                athlete.pool_result_at, athlete.pool_results_unknown,
+                athlete.pool_wins, athlete.pool_losses, event.name AS event_name,
                 meets.status AS meet_status, meets.ended_at AS meet_ended_at, meets.day_status,
                 event.status AS event_status, competitions.status AS competition_status
             FROM coverage_requests AS request
@@ -5343,10 +5352,7 @@ class CompCoachDB:
                 if athlete.get("phase") == "de":
                     unfinished_ids.add(athlete_id)
                     continue
-                pool_complete = (
-                    athlete.get("pool_wins") is not None
-                    and athlete.get("pool_losses") is not None
-                )
+                pool_complete = pool_is_complete(athlete)
                 if (
                     not pool_complete
                     or athlete.get("call_status") != "waiting"
@@ -5987,6 +5993,7 @@ class CompCoachDB:
                             {
                                 "pool_wins": None,
                                 "pool_losses": None,
+                                "pool_results_unknown": 0,
                                 "pool_result_at": None,
                                 "pool_result_by": "",
                             }
@@ -6124,7 +6131,7 @@ class CompCoachDB:
         # Results, attendance changes and phase changes end that promise, but
         # ordinary call/assignment edits preserve it.
         if (
-            action in {"won", "lost", "bye", "out", "pool_result", "de_bout_result", "de_import_not_advanced"}
+            action in {"won", "lost", "bye", "out", "pool_result", "pool_done_unknown", "de_bout_result", "de_import_not_advanced"}
             or ("phase" in safe_changes and safe_changes["phase"] != current["phase"])
             or safe_changes.get("participation_status", "active") != "active"
             or safe_changes.get("active_state", "active") != "active"
@@ -6676,6 +6683,7 @@ class CompCoachDB:
                 changes={
                     "pool_wins": wins,
                     "pool_losses": losses,
+                    "pool_results_unknown": 0,
                     "pool_result_at": utc_now(),
                     "pool_result_by": actor,
                     "covered_by": "",
@@ -6699,6 +6707,108 @@ class CompCoachDB:
                 self._mark_released_coaches_available(
                     conn, meet["id"], [current["covered_by"], current["takeover_coach"]], actor,
                 )
+            conn.commit()
+        return result
+
+    def set_pool_done_unknown(
+        self,
+        event_id: str,
+        athlete_id: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Finish Pools without asserting a win/loss tally.
+
+        This also deliberately replaces a tally reported earlier when the
+        coach is no longer certain. The action snapshot retains that tally
+        for review; it is never displayed as a confirmed result afterwards.
+        """
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            current = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
+                (event_id, athlete_id),
+            ).fetchone()
+            if current is None:
+                raise CompCoachError("Athlete not found.")
+            if current["phase"] != "pools":
+                raise CompCoachError("Pool completion is available only during Pools.")
+            result = self._update_athlete(
+                conn,
+                event_id=event_id,
+                athlete_id=athlete_id,
+                changes={
+                    "pool_wins": None,
+                    "pool_losses": None,
+                    "pool_results_unknown": 1,
+                    "pool_result_at": utc_now(),
+                    "pool_result_by": actor,
+                    "covered_by": "",
+                    "covered_at": None,
+                    "call_status": "waiting",
+                    "live_location": "",
+                    "reported_at": None,
+                    "reported_by": "",
+                    "help_requested_by": "",
+                    "help_requested_at": None,
+                    "help_location": "",
+                    "help_acknowledged_by": "",
+                    "help_acknowledged_at": None,
+                },
+                action="pool_done_unknown",
+                actor=actor,
+                expected_version=expected_version,
+                require_active=True,
+            )
+            if current["covered_by"] or current["takeover_coach"]:
+                meet = self._meet_for_event(conn, event_id)
+                self._mark_released_coaches_available(
+                    conn, meet["id"], [current["covered_by"], current["takeover_coach"]], actor,
+                )
+            conn.commit()
+        return result
+
+    def reopen_pool(
+        self,
+        event_id: str,
+        athlete_id: str,
+        actor: str,
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
+        """Correct an unknown completion without restoring an obsolete call."""
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            row = conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND id = ?",
+                (event_id, athlete_id),
+            ).fetchone()
+            if row is None:
+                raise CompCoachError("Athlete not found.")
+            current = dict(row)
+            if current["phase"] != "pools":
+                raise CompCoachError("Pools can be reopened only during Pools.")
+            if not pool_results_are_unknown(current):
+                raise CompCoachError("Only a pool marked done with unknown results can be reopened.")
+            result = self._update_athlete(
+                conn,
+                event_id=event_id,
+                athlete_id=athlete_id,
+                changes={
+                    "pool_wins": None,
+                    "pool_losses": None,
+                    "pool_results_unknown": 0,
+                    "pool_result_at": None,
+                    "pool_result_by": "",
+                },
+                action="pool_reopened",
+                actor=actor,
+                expected_version=expected_version,
+                require_active=True,
+            )
             conn.commit()
         return result
 

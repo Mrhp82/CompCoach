@@ -1,6 +1,6 @@
 # CompCoach — esercitazione autonoma
 
-Istruzioni per CompCoach Live v0.10.8.
+Istruzioni per CompCoach Live v0.10.9.
 
 L'amministratore attiva il link una volta, lo condivide e può disinteressarsi
 dell'esercitazione. Non deve interpretare il coordinatore, generare chiamate o
@@ -52,6 +52,14 @@ consultato **Team situation**. Sulla scheda dell'atleta indicato apri
 **Add pool result**, premi **3** sotto **Wins** e **3** sotto **Losses**, quindi
 **Save pool result**. Puoi scegliere un altro riepilogo valido. La guida
 indica esplicitamente questo ritorno alla schermata personale.
+
+Se il girone è concluso ma non conosci il riepilogo, puoi premere
+**Pool done · Not sure about results** sulla scheda dell'atleta. L'atleta
+passa nei gironi completati senza attribuire vittorie o sconfitte inventate.
+Questo comando fa proseguire anche la lezione della pratica. Puoi poi
+inserire il riepilogo reale, oppure usare **Reopen pool** per annullare la
+chiusura e tornare a lavorare sul girone. Non determina l'avanzamento alle
+dirette.
 
 La lista operativa di **Team situation** è raggruppata per coach assegnato.
 Nei gironi il gruppo usa il Main coach, oppure il Side se manca il Main.

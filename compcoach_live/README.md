@@ -12,7 +12,15 @@ It stores no bout scores, imported DE bracket, seed, or ranking. It keeps the
 pool W/L summary, DE outcomes and byes, an optional starting tableau size,
 and optional manually linked AFM-versus-AFM opponents.
 
-## Included in v0.10.8
+## Included in v0.10.9
+
+### New in v0.10.9
+
+- **Pool done · Not sure about results** closes an individual pool duty without inventing wins or losses. It is available to coaches, coordinators and Admin beside the pool result editor, including when an earlier tally needs to be overridden.
+- The athlete moves into **Completed pool results** in **My Group**. Shared active lists, outstanding-duty counts and coverage requests also recognize this completion. It does not mark an athlete eliminated or infer DE advancement.
+- Completed entries clearly say that the results are unknown. Enter **Wins / Losses → Save pool result** later to replace that status, or use **Reopen pool** to put the athlete back into active pool work. An override preserves the earlier tally in the audit history.
+- **Team situation → Pool results** separates completed pools with unknown totals from numeric results and pools still awaiting completion. Unknown totals remain explicit in historical views and when the athlete advances to DE.
+- Completion releases current coverage, takeover and help, just like saving a known pool result. The autonomous pool lesson also accepts the completion option without filling in a fabricated tally.
 
 ### New in v0.10.8
 

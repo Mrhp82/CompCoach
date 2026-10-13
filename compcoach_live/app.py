@@ -61,6 +61,7 @@ try:
     from compcoach_live.de_rotation import ordered_de_athletes
     from compcoach_live.de_progress import describe_de_progress
     from compcoach_live.team_groups import group_team_athletes_by_coach
+    from compcoach_live.pool_results import pool_has_results, pool_is_complete, pool_results_are_unknown
     from compcoach_live.de_corrections_ui import render_de_result_corrections
     from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
@@ -105,6 +106,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     from de_rotation import ordered_de_athletes
     from de_progress import describe_de_progress
     from team_groups import group_team_athletes_by_coach
+    from pool_results import pool_has_results, pool_is_complete, pool_results_are_unknown
     from de_corrections_ui import render_de_result_corrections
     from schedule_setup import render_competition_schedule
     from training import get_training, join_training, list_training_sessions, tick_training
@@ -120,7 +122,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.10.8"
+APP_VERSION = "0.10.9"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -535,7 +537,8 @@ def has_inactive_assignment(athlete: dict, event: dict) -> bool:
 def coach_workload(athletes: list[dict], coach: str) -> dict[str, object]:
     """Return a meet-wide operational workload without declaring availability.
 
-    A recorded Pools W/L summary means that Pools duty is finished. A DE duty
+    A recorded Pools W/L summary or explicit Pool done override means that
+    Pools duty is finished. A DE duty
     remains open while the athlete is active, including after a Won result.
     Temporary coverage, help response, and an unresolved help request made by
     the coach also keep that athlete in the open-duty set.
@@ -552,7 +555,7 @@ def coach_workload(athletes: list[dict], coach: str) -> dict[str, object]:
         planned_here = coach in assigned_coach_names(row)
         pools_pending = (
             row.get("phase") == "pools"
-            and (row.get("pool_wins") is None or row.get("pool_losses") is None)
+            and not pool_is_complete(row)
         )
         de_pending = row.get("phase") == "de"
         temporary_duty = coach in {
@@ -2149,7 +2152,10 @@ def render_quick_update(event: dict, role: str, actor: str, *,
                         athletes: list[dict] | None = None, expanded: bool | None = None) -> None:
     if athletes is None:
         _, athletes, _ = load_meet_context(event["id"])
-    active = operational_view_athletes(athletes)
+    active = [
+        row for row in operational_view_athletes(athletes)
+        if not (row.get("phase") == "pools" and pool_is_complete(row))
+    ]
     with st.expander("➕ Report athlete location",
                      expanded=role == "coordinator" if expanded is None else expanded):
         if not actor:
@@ -2237,8 +2243,30 @@ def personal_role_text(athlete: dict, actor: str) -> str:
     return " · ".join(roles)
 
 
+def apply_pool_completion_snapshot(event_id, athlete_id, actor, version, *, reopen=False):
+    """Use one tap and a version snapshot, without changing instantiated widgets."""
+    try:
+        action = db.reopen_pool if reopen else db.set_pool_done_unknown
+        saved = action(event_id, athlete_id, actor, expected_version=version)
+        message = (
+            f"{saved['name']}: pool reopened."
+            if reopen else f"{saved['name']}: pool done · results unknown."
+        )
+        st.session_state["de_fast_notice"] = (True, message)
+    except CompCoachError as exc:
+        st.session_state["de_fast_notice"] = (False, str(exc))
+    st.session_state["de_fast_refresh"] = True
+
+
 def render_pool_result_editor(event: dict, actor: str, athlete: dict) -> None:
-    recorded = athlete.get("pool_wins") is not None and athlete.get("pool_losses") is not None
+    recorded = pool_has_results(athlete)
+    unknown = pool_results_are_unknown(athlete)
+    if unknown:
+        st.markdown(
+            "<div class='cc-result'>✓ Pool done · Not sure about results</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Pool coaching is finished. Wins and losses are unknown; add the confirmed result later.")
     if recorded:
         byline = f" · saved by {athlete['pool_result_by']}" if athlete.get("pool_result_by") else ""
         st.markdown(
@@ -2246,8 +2274,26 @@ def render_pool_result_editor(event: dict, actor: str, athlete: dict) -> None:
             f"{athlete['pool_losses']} L{esc(byline)}</div>",
             unsafe_allow_html=True,
         )
-    if athlete["phase"] != "pools" or event["status"] != "open" or not actor:
+    if (
+        athlete["phase"] != "pools" or event["status"] != "open" or not actor
+        or not is_operational_athlete(athlete)
+    ):
         return
+    if unknown:
+        st.button(
+            "Reopen pool", width="stretch",
+            key=f"pool_reopen_{athlete['id']}_{athlete['version']}",
+            on_click=apply_pool_completion_snapshot,
+            args=(event["id"], athlete["id"], actor, int(athlete["version"])),
+            kwargs={"reopen": True},
+        )
+    else:
+        st.button(
+            "Pool done · Not sure about results", width="stretch",
+            key=f"pool_done_unknown_{athlete['id']}_{athlete['version']}",
+            on_click=apply_pool_completion_snapshot,
+            args=(event["id"], athlete["id"], actor, int(athlete["version"])),
+        )
     result_label = "Edit pool result" if recorded else "Add pool result"
     result_revision = f"{athlete['id']}_{athlete['version']}"
     with st.expander(result_label, expanded=False):
@@ -2483,7 +2529,7 @@ def render_athlete_card(
                 unsafe_allow_html=True,
             )
 
-        if personal:
+        if personal or athlete.get("phase") == "pools":
             render_pool_result_editor(event, actor, athlete)
         if athlete.get("phase") == "de":
             last_result = str(athlete.get("last_de_result") or "").title()
@@ -2752,7 +2798,10 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
         child["id"]: list_de_bouts(db, child["id"])
         for child in events if any(row["phase"] == "de" and row["event_id"] == child["id"] for row in athletes)
     }
-    active = operational_view_athletes(athletes)
+    active = [
+        row for row in operational_view_athletes(athletes)
+        if not (row.get("phase") == "pools" and pool_is_complete(row))
+    ]
     out = [a for a in athletes if is_competitive_out(a)]
     needs = [a for a in active if a["call_status"] != "waiting" and not a["covered_by"]]
     stale_needs = [a for a in needs if is_stale(a)]
@@ -2793,7 +2842,7 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
         render_team_plan(event, actor, show_heading=False)
     with st.expander("Pool results", expanded=migrated_panel == "Pool Results",
                      key=f"{panel_key}_results", type="compact"):
-        render_pool_results_summary(events, athletes)
+        render_pool_results_summary(events, athletes, actor=actor)
     render_missed_coaching_review(
         db, event, actor, role, read_only=event.get("status") != "open",
         include_training=bool(get_training(db, event["id"])),
@@ -3055,8 +3104,7 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
         row
         for row in participating_mine
         if row.get("phase") == "pools"
-        and row.get("pool_wins") is not None
-        and row.get("pool_losses") is not None
+        and pool_is_complete(row)
     ]
     completed_pool_ids = {row["id"] for row in completed_pools}
     working_mine = [
@@ -3268,7 +3316,7 @@ def render_emergency_coverage_request(
         eligible = [row for row in operational_view_athletes(athletes)
                     if not row.get("covered_by") and not row.get("takeover_coach")
                     and row["id"] not in pending_ids
-                    and not (row["phase"] == "pools" and row.get("pool_result_at"))]
+                    and not (row["phase"] == "pools" and pool_is_complete(row))]
         if not eligible:
             st.info("No uncovered athlete is available for a new request.")
             return
@@ -3776,9 +3824,10 @@ def render_de_sector_overview(
 
 
 
-def render_pool_results_summary(events: list[dict], athletes: list[dict]) -> None:
+def render_pool_results_summary(events: list[dict], athletes: list[dict], *, actor: str = "") -> None:
     st.caption(
-        "Recorded pool summaries only. This list does not infer advancement or final placement."
+        "Recorded pool summaries and finished pools with unknown results. "
+        "This list does not infer advancement or final placement."
     )
     if not events:
         st.info("No events have been created yet.")
@@ -3791,16 +3840,19 @@ def render_pool_results_summary(events: list[dict], athletes: list[dict]) -> Non
         recorded = [
             row
             for row in child_rows
-            if row.get("pool_wins") is not None and row.get("pool_losses") is not None
+            if pool_has_results(row)
         ]
+        unknown = [row for row in child_rows if pool_results_are_unknown(row)]
         awaiting = [
             row
             for row in child_rows
             if row["phase"] == "pools"
             and row["id"] in child_operational_ids
-            and (row.get("pool_wins") is None or row.get("pool_losses") is None)
+            and not pool_is_complete(row)
         ]
         label = f"{child['name']} · {len(recorded)} results entered"
+        if unknown:
+            label += f" · {len(unknown)} pool(s) done · results unknown"
         if awaiting:
             label += f" · {len(awaiting)} awaiting"
         with st.expander(label, expanded=len(events) == 1 and index == 0):
@@ -3824,6 +3876,20 @@ def render_pool_results_summary(events: list[dict], athletes: list[dict]) -> Non
                         f"{int(row['pool_wins'])} W · {int(row['pool_losses'])} L</span></div>"
                     )
                 st.markdown("".join(rows_html), unsafe_allow_html=True)
+            if unknown:
+                st.markdown(f"**Pool done · Results unknown · {len(unknown)}**")
+                for row in sorted(unknown, key=lambda item: str(item["name"]).casefold()):
+                    state = " · Out" if is_competitive_out(row) else ""
+                    st.markdown(f"**{esc(row['name'])}**{esc(state)} · Pool done · Not sure about results")
+            editable = [
+                row for row in [*recorded, *unknown]
+                if row.get("phase") == "pools" and is_operational_athlete(row)
+            ]
+            if actor and child.get("status") == "open" and editable:
+                with st.expander("Edit completed pool entries", expanded=False):
+                    for row in sorted(editable, key=lambda item: str(item["name"]).casefold()):
+                        st.markdown(f"**{esc(row['name'])}**")
+                        render_pool_result_editor(child, actor, row)
             if awaiting:
                 st.caption(
                     "Awaiting result: " + ", ".join(row["name"] for row in awaiting)
@@ -4233,6 +4299,8 @@ ACTION_LABELS = {
     "pod_assignment": "changed pod assignment",
     "sector_support": "added a coach to a pod",
     "pool_result": "saved pool result",
+    "pool_done_unknown": "finished pool · results unknown",
+    "pool_reopened": "reopened pool",
     "phase_started": "started a phase",
     "phase_reset": "reset a phase to not started",
     "help_request": "requested help",
@@ -4883,7 +4951,9 @@ def render_event(event: dict, role: str) -> None:
                         for athlete in db.list_athletes(child["id"]):
                             pool_result = (
                                 f"Pools {athlete['pool_wins']} W / {athlete['pool_losses']} L · "
-                                if athlete.get("pool_wins") is not None else ""
+                                if pool_has_results(athlete)
+                                else "Pool done · Not sure about results · "
+                                if pool_results_are_unknown(athlete) else ""
                             )
                             state = "Out" if athlete["active_state"] == "eliminated" else "Still in"
                             st.markdown(f"**{esc(athlete['name'])}**")
