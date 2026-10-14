@@ -41,6 +41,20 @@ CREATE TABLE IF NOT EXISTS competitions (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS parent_access_links (
+    competition_id TEXT PRIMARY KEY REFERENCES competitions(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS parent_visibility_settings (
+    competition_id TEXT PRIMARY KEY REFERENCES competitions(id) ON DELETE CASCADE,
+    show_coach_status INTEGER NOT NULL DEFAULT 0 CHECK (show_coach_status IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS meets (
     id TEXT PRIMARY KEY,
     competition_id TEXT REFERENCES competitions(id) ON DELETE SET NULL,
@@ -151,6 +165,8 @@ CREATE TABLE IF NOT EXISTS phase_states (
     started INTEGER NOT NULL DEFAULT 0 CHECK (started IN (0, 1)),
     changed_at TEXT,
     changed_by TEXT NOT NULL DEFAULT '',
+    closed_at TEXT,
+    closed_by TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(event_id, phase)
 );
@@ -314,6 +330,8 @@ $compcoach_permissions$;
 
 
 -- Additive upgrade for existing deployments; keep intentional empty groups.
+ALTER TABLE phase_states ADD COLUMN IF NOT EXISTS closed_at TEXT;
+ALTER TABLE phase_states ADD COLUMN IF NOT EXISTS closed_by TEXT NOT NULL DEFAULT '';
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS de_coaches_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pool_results_unknown INTEGER NOT NULL DEFAULT 0
     CHECK (pool_results_unknown IN (0, 1));

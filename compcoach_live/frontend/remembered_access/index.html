@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;overflow:hidden}</style></head><body>
+<script>
+(() => {
+  "use strict";
+  const testConfig = null;
+  let lastSent;
+  const send = (type, extras = {}) => window.parent.postMessage({
+    isStreamlitMessage: true, type, ...extras
+  }, "*");
+  const value = record => {
+    const result = {action: "restore", record};
+    const fingerprint = JSON.stringify(result);
+    if (fingerprint === lastSent) return;
+    lastSent = fingerprint;
+    send("streamlit:setComponentValue", {value: result, dataType: "json"});
+  };
+  const process = config => {
+    if (!config || typeof config !== "object") return;
+    try {
+      // Same-origin storage reads are permitted; the iframe never navigates.
+      const page = window.parent;
+      const current = new URL(page.location.href);
+      const storage = page.localStorage;
+      const roles = new Set(["admin", "coordinator", "coach"]);
+      const allowed = new Set(["event", "token", "who", "archive"]);
+      const plain = text => typeof text === "string" && text.trim().length > 0
+        && text.length <= 4096 && !/[\x00-\x1f\x7f]/.test(text);
+      const valid = record => {
+        if (!record || record.schema !== config.schema || !roles.has(record.role)
+            || !plain(record.event) || !plain(record.actor)
+            || typeof record.url !== "string" || !record.url.startsWith("?")
+            || record.url.length > 16384 || /[\x00-\x1f\x7f]/.test(record.url)) return false;
+        const target = new URL(record.url, current.href);
+        if (target.origin !== current.origin || target.pathname !== current.pathname || target.hash) return false;
+        for (const key of target.searchParams.keys()) {
+          if (!allowed.has(key) || target.searchParams.getAll(key).length !== 1) return false;
+        }
+        for (const key of ["event", "token", "who"]) {
+          if (!plain(target.searchParams.get(key))) return false;
+        }
+        if (target.searchParams.get("event") !== record.event
+            || target.searchParams.get("who") !== record.actor) return false;
+        if (target.searchParams.has("archive")
+            && (record.role !== "admin" || target.searchParams.get("archive") !== "1")) return false;
+        return true;
+      };
+      if (config.action === "clear") {
+        storage.removeItem(config.storageKey);
+        // Remove the guard used by the preceding inline component version.
+        try { page.sessionStorage.removeItem(config.storageKey + ":restore-attempt"); } catch (_) {}
+        return;
+      }
+      if (config.action === "remember") {
+        const record = {
+          schema: config.schema, role: config.role, event: config.event,
+          actor: config.actor, url: config.url,
+          expiresAt: Date.now() + Math.min(config.ttlMs, config.maxTtlMs)
+        };
+        if (valid(record)) storage.setItem(config.storageKey, JSON.stringify(record));
+        return;
+      }
+      if (config.action !== "restore") return;
+      if (current.searchParams.get("home") === "1"
+          || current.searchParams.has("event") || current.searchParams.has("token")) {
+        value(null);
+        return;
+      }
+      let record;
+      try { record = JSON.parse(storage.getItem(config.storageKey) || "null"); }
+      catch (_) { storage.removeItem(config.storageKey); value(null); return; }
+      const remaining = record && typeof record.expiresAt === "number" ? record.expiresAt - Date.now() : NaN;
+      if (!valid(record) || !Number.isFinite(remaining) || remaining <= 0 || remaining > config.maxTtlMs) {
+        storage.removeItem(config.storageKey);
+        value(null);
+        return;
+      }
+      value(record);
+    } catch (_) {
+      // Storage restrictions must leave the ordinary app usable.
+      if (config.action === "restore") value(null);
+    }
+  };
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent || !event.data || event.data.type !== "streamlit:render") return;
+    process(event.data.args && event.data.args.config);
+    send("streamlit:setFrameHeight", {height: 0});
+  });
+  send("streamlit:componentReady", {apiVersion: 1});
+  send("streamlit:setFrameHeight", {height: 0});
+  if (testConfig) process(testConfig);
+})();
+</script></body></html>

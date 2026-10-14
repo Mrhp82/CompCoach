@@ -1,4 +1,4 @@
-"""Emergency help stays visible on DE cards and the current-bout shortcut."""
+"""Emergency help stays actionable in personal cards and compact Team details."""
 
 from __future__ import annotations
 
@@ -95,13 +95,20 @@ def _expander_ancestors(app, widget_key):
     ("admin", "My Group"), ("admin", "Team situation"),
     ("coordinator", "Team situation"),
 ])
-def test_need_help_is_directly_visible_for_each_operational_role_and_view(board, role, view):
+def test_need_help_is_available_for_each_operational_role_and_view(board, role, view):
     database, _, _, _, target = board
     app, who = _open(board, role, view)
     key = f"help_request_{target['id']}"
     help_button = keyed(app.button, key)
     assert help_button.label == "🚨 Need help now" and not help_button.disabled
-    assert not _expander_ancestors(app, key)
+    parents = _expander_ancestors(app, key)
+    if view == "My Group":
+        assert not parents
+    else:
+        assert len(parents) == 1
+        assert target["name"] in parents[0].label and "Strip K4" in parents[0].label
+        assert not parents[0].proto.expanded
+        assert keyed(parents[0].button, key).label == "🚨 Need help now"
     assert not any("Confirm" in button.label for button in app.button)
     help_button.click().run()
     saved = database.get_athlete(target["event_id"], target["id"])
@@ -115,16 +122,26 @@ def test_need_help_is_directly_visible_for_each_operational_role_and_view(board,
     ("coach", "My Group"), ("coach", "Team situation"),
     ("admin", "My Group"), ("admin", "Team situation"),
 ])
-def test_busy_hero_keeps_help_next_to_results_without_opening_details(board, role, view):
+def test_current_athlete_keeps_help_next_to_results_in_personal_hero_or_team_details(board, role, view):
     database, _, actor, current, _ = board
     database.cover_athlete(current["event_id"], current["id"], actor, actor, location="J2")
     app, _ = _open(board, role, view)
-    key = f"current_help_request_{current['id']}"
+    if view == "Team situation":
+        keyed(app.get("button_group"), "live_view_").set_value("Covered Now").run()
+    prefix = "current_" if view == "My Group" else ""
+    key = f"{prefix}help_request_{current['id']}"
     help_button = keyed(app.button, key)
-    assert not _expander_ancestors(app, key)
+    parents = _expander_ancestors(app, key)
+    if view == "My Group":
+        assert not parents
+    else:
+        assert len(parents) == 1
+        assert current["name"] in parents[0].label and "Strip J2" in parents[0].label
+        assert not parents[0].proto.expanded
+        assert keyed(parents[0].button, key).label == "🚨 Need help now"
     assert not help_button.disabled
-    assert keyed(app.button, f"current_won_{current['id']}")
-    assert keyed(app.button, f"current_lost_{current['id']}")
+    assert keyed(app.button, f"{prefix}won_{current['id']}")
+    assert keyed(app.button, f"{prefix}lost_{current['id']}")
     help_button.click().run()
     saved = database.get_athlete(current["event_id"], current["id"])
     assert saved["help_requested_by"] == actor and saved["help_location"] == "J2"

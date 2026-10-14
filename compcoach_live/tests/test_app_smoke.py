@@ -521,9 +521,10 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     app = open_board(meet["id"], meet["admin_token"], "Carmine")
     nav_named(app, "admin_nav_").set_value("Share").run()
 
-    coach_link = app.code[0].value
-    coordinator_link = app.code[1].value
-    message = app.code[2].value
+    assert "?competition=" in app.code[0].value
+    coach_link = next(code.value for code in app.code if f"token={meet['coach_token']}" in code.value and code.value.startswith("https://"))
+    coordinator_link = next(code.value for code in app.code if f"token={meet['coordinator_token']}" in code.value and code.value.startswith("https://"))
+    message = next(code.value for code in app.code if code.value.startswith("🏆"))
     assert coach_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert coordinator_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert foil["id"] not in coach_link and epee["id"] not in coach_link
@@ -573,7 +574,7 @@ def test_coach_my_group_saves_pool_result_and_global_help_crosses_events(
     admin = open_board(meet["id"], meet["admin_token"], "Carmine")
     admin_group = nav_named(admin, "admin_nav_")
     assert admin_group.value == "My Group"
-    assert any("⭐ Cadet Foil" in value for value in markdown_values(admin))
+    assert any(button.label == "⭐ Cadet Foil" for button in admin.button)
     assert any("🔹 Main" in value for value in markdown_values(admin))
     assert any(button.label == "🚨 Need help now" for button in admin.button)
     assert not admin.exception
@@ -582,9 +583,9 @@ def test_coach_my_group_saves_pool_result_and_global_help_crosses_events(
     my_group = nav_named(carmine, "coach_nav_")
     assert my_group.value == "My Group"
     assert any("🔹 Main" in value for value in markdown_values(carmine))
-    assert any("⭐ Cadet Foil" in value for value in markdown_values(carmine))
-    assert not any("⭐ Junior Epee" in value for value in markdown_values(carmine))
-    assert "calc(4rem + env(safe-area-inset-top))" in carmine.markdown[0].value
+    assert any(button.label == "⭐ Cadet Foil" for button in carmine.button)
+    assert not any(button.label == "⭐ Junior Epee" for button in carmine.button)
+    assert "env(safe-area-inset-top)" in carmine.markdown[0].value
     assert not any(button.label == "Out · did not advance" for button in carmine.button)
     assert any(button.label == "🚨 Need help now" for button in carmine.button)
 
@@ -1155,17 +1156,22 @@ def test_finish_day_keeps_data_read_only_and_offers_no_reopen(tmp_path, monkeypa
     assert archived["ended_by"] == "Carmine"
     assert retained["name"] == "DING Max"
     assert retained["help_requested_at"]
-    assert "event" not in app.query_params
-    assert "token" not in app.query_params
-    assert any(item.value == "⏸️ No active competition" for item in app.subheader)
+    assert query_value(app, "event") == meet["id"]
+    assert query_value(app, "token") == meet["admin_token"]
+    assert query_value(app, "who") == "Carmine"
+    assert query_value(app, "archive") == "1"
+    assert nav_named(app, "admin_archive_nav_").value == "Days"
+    assert database.get_competition(meet["competition_id"])["status"] == "open"
+    assert any("Day ended" in item.value for item in app.success)
     # Use a fresh app session: AppTest retains widgets from completed timed
     # fragments after app-level navigation even though their state was cleared.
     app = open_board(meet["id"], meet["admin_token"], "Carmine", archive=True)
     assert any("archive is read-only" in info.value for info in app.info)
-    nav_named(app, "admin_nav_").set_value("Setup").run()
-    nav_named(app, "admin_setup_nav_").set_value("Settings").run()
     assert not any(button.label == "Reopen paused competition" for button in app.button)
-    assert button_named(app, "Save settings").disabled
+    assert not any(button.label == "Save settings" for button in app.button)
+    button_named(app, "View day archive").click().run()
+    assert nav_named(app, "admin_archive_nav_").value == "Overview"
+    assert any("DING Max" in value for value in markdown_values(app))
     assert not app.exception
 
 
@@ -1237,11 +1243,11 @@ def test_explicit_admin_archive_view_does_not_roll_to_prepared_successor(
     assert any("archive is read-only" in info.value for info in app.info)
     assert not any("October NAC Day 2" in value for value in markdown_values(app))
     assert database.list_athletes(event["id"])[0]["name"] == "OLD ATHLETE"
-    assert nav_named(app, "admin_nav_").value == "My Group"
+    assert nav_named(app, "admin_archive_nav_").value == "Days"
     assert not app.exception
 
 
-def test_finish_and_prepare_next_day_creates_clean_successor_and_new_link(
+def test_close_and_prepare_next_day_keeps_competition_and_waits_for_explicit_start(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "prepare-next-day.db"
@@ -1271,23 +1277,17 @@ def test_finish_and_prepare_next_day_creates_clean_successor_and_new_link(
     app = open_board(meet["id"], meet["admin_token"], "Carmine")
     nav_named(app, "admin_nav_").set_value("Setup").run()
     nav_named(app, "admin_setup_nav_").set_value("Settings").run()
-    prepare_button = button_named(app, "Finish & prepare next day")
-    assert not prepare_button.disabled
-    prepare_button.click().run()
-    assert any(
-        "Confirm that the current day is finished" in warning.value
-        for warning in app.warning
-    )
+    assert button_named(app, "Finish day only").disabled
+    assert not any(button.label == "Finish & prepare next day" for button in app.button)
     assert database.get_meet(meet["id"])["ended_at"] is None
-
-    next_day_confirm = next(
-        checkbox
-        for checkbox in app.checkbox
-        if checkbox.label
-        == "I confirm that today is finished and the next day must start empty"
-    )
-    next_day_confirm.set_value(True).run()
-    button_named(app, "Finish & prepare next day").click().run()
+    keyed(app.checkbox, "confirm_finish_").set_value(True).run()
+    button_named(app, "Finish day only").click().run()
+    assert query_value(app, "event") == meet["id"]
+    assert nav_named(app, "admin_archive_nav_").value == "Days"
+    # Reopen the resulting archive URL: AppTest retains removed live fragment
+    # widgets after navigation, although the browser discards those controls.
+    app = open_board(meet["id"], meet["admin_token"], "Carmine", archive=True)
+    button_named(app, "Prepare next day").click().run()
 
     old_meet = database.get_meet(meet["id"])
     successor = next(
@@ -1300,6 +1300,9 @@ def test_finish_and_prepare_next_day_creates_clean_successor_and_new_link(
     assert successor["name"] == "October NAC Day 2"
     assert successor["competition_date"] == "2026-10-02"
     assert successor["status"] == "open"
+    assert successor["day_status"] == "scheduled"
+    assert successor["competition_id"] == old_meet["competition_id"]
+    assert database.get_active_competition_day(old_meet["competition_id"]) is None
     assert successor["active_coaches"] == old_meet["active_coaches"]
     assert successor["coordinators"] == old_meet["coordinators"]
     assert successor["timezone"] == old_meet["timezone"]
@@ -1312,6 +1315,9 @@ def test_finish_and_prepare_next_day_creates_clean_successor_and_new_link(
         for event in new_events
         for phase in ("pools", "de")
     )
+    assert query_value(app, "event") == meet["id"]
+    assert query_value(app, "token") == meet["admin_token"]
+    keyed(app.button, "start_prepared_day_").click().run()
     assert query_value(app, "event") == successor["id"]
     assert query_value(app, "token") == successor["admin_token"]
     assert query_value(app, "who") == "Carmine"
@@ -1355,7 +1361,8 @@ def test_old_nonadmin_links_roll_to_latest_day_and_preserve_valid_identity(
         assert query_value(app, "who") == actor
         assert "archive" not in app.query_params
         assert nav_named(app, nav_prefix)
-        assert any("October NAC Day 3" in value for value in markdown_values(app))
+        assert any("October NAC" in value for value in markdown_values(app))
+        assert any("Day 3" in caption.value and "2026-10-03" in caption.value for caption in app.caption)
         assert not app.exception
 
 
@@ -1802,7 +1809,7 @@ def test_pool_waves_assign_all_then_show_and_activate_one_wave(
 
     share = open_board(meet["id"], meet["admin_token"], "Carmine")
     nav_named(share, "admin_nav_").set_value("Share").run()
-    first_message = share.code[2].value
+    first_message = next(code.value for code in share.code if code.value.startswith("🏆"))
     assert names[0] in first_message
     assert "UNTIMED ATHLETE" in first_message
     assert all(name not in first_message for name in names[1:])

@@ -112,7 +112,12 @@ def test_result_selectors_match_the_installed_native_frontend_contract():
     button_group = next(frontend.glob("ButtonGroup.*.js")).read_text()
     styled = "\n".join(path.read_text() for path in frontend.glob("styled-components.*.js"))
     button = next(frontend.glob("Button.*.js")).read_text()
-    index = next(frontend.glob("index.*.js")).read_text()
+    # Several dependencies also emit index.*.js chunks. Find the native element
+    # renderer by its DOM contract, rather than by filesystem iteration order.
+    indexes = [path.read_text() for path in frontend.glob("index.*.js")]
+    renderers = [bundle for bundle in indexes if '"data-testid":`stElementContainer`' in bundle]
+    assert len(renderers) == 1
+    index = renderers[0]
 
     assert '"data-testid":`stButtonGroup`' in button_group
     assert '"data-variant"' in button_group and '`segmented_control`' in button_group
@@ -120,8 +125,25 @@ def test_result_selectors_match_the_installed_native_frontend_contract():
     assert '`aria-checked`' in styled
     assert '"data-testid":`stButton`' in button
     # Native keyed controls really have the st-key class on their outer node.
-    assert re.search(r'className:.*?`stElementContainer`.*?Sx\(Cx\(', index)
-    assert '`st-key-`' in index
+    # Minifier symbol names are build details. Identify the key-class builder
+    # from its stable prefix, then verify that the same builder is used in the
+    # element's className alongside the stElementContainer hook.
+    key_builder = re.search(
+        r'function\s+([\w$]+)\([^)]*\)\{[^{}]{0,250}`st-key-`[^{}]{0,250}\}',
+        index,
+    )
+    assert key_builder
+    container_class = re.search(
+        r'className:([^;]{0,350}?),"data-testid":`stElementContainer`', index,
+    )
+    assert container_class and '`stElementContainer`' in container_class[1]
+    assert re.search(r'\b' + re.escape(key_builder[1]) + r'\(', container_class[1])
     assert '"data-testid":`stColumn`' in index
-    assert 'HORIZONTAL?`stHorizontalBlock`:`stVerticalBlock`' in index
-    assert '"data-testid":_x(t)' in index
+    block_test_id = re.search(
+        r'function\s+([\w$]+)\([^)]*\)\{return[^{};]{0,100}'
+        r'HORIZONTAL\?`stHorizontalBlock`:`stVerticalBlock`\}', index,
+    )
+    assert block_test_id
+    assert re.search(
+        r'"data-testid":' + re.escape(block_test_id[1]) + r'\([^)]*\)', index,
+    )

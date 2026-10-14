@@ -251,6 +251,20 @@ class CompCoachDB:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS parent_access_links (
+                    competition_id TEXT PRIMARY KEY REFERENCES competitions(id) ON DELETE CASCADE,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    created_by TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS parent_visibility_settings (
+                    competition_id TEXT PRIMARY KEY REFERENCES competitions(id) ON DELETE CASCADE,
+                    show_coach_status INTEGER NOT NULL DEFAULT 0 CHECK (show_coach_status IN (0, 1)),
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS meets (
                     id TEXT PRIMARY KEY,
                     competition_id TEXT REFERENCES competitions(id) ON DELETE SET NULL,
@@ -388,6 +402,8 @@ class CompCoachDB:
                     started INTEGER NOT NULL DEFAULT 0 CHECK (started IN (0, 1)),
                     changed_at TEXT,
                     changed_by TEXT NOT NULL DEFAULT '',
+                    closed_at TEXT,
+                    closed_by TEXT NOT NULL DEFAULT '',
                     version INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(event_id, phase)
                 );
@@ -704,6 +720,12 @@ class CompCoachDB:
                 conn.execute(
                     "ALTER TABLE phase_states ADD COLUMN version INTEGER NOT NULL DEFAULT 0"
                 )
+            for column, definition in {
+                "closed_at": "TEXT",
+                "closed_by": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if column not in phase_state_columns:
+                    conn.execute(f"ALTER TABLE phase_states ADD COLUMN {column} {definition}")
             meet_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(meets)").fetchall()
             }
@@ -1727,8 +1749,8 @@ class CompCoachDB:
         """Release actual bout coverage or an accepted takeover atomically.
 
         Planned pod assignments are retained and do not imply that a coach is
-        physically busy. Remaining live coverage or a pending takeover always
-        wins over availability, including legacy records from older versions.
+        physically busy. Remaining coverage, takeovers or unresolved help
+        duties win over availability, including legacy records.
         """
         meet = conn.execute(
             "SELECT active_coaches_json FROM meets WHERE id = ?", (meet_id,)
@@ -1745,10 +1767,12 @@ class CompCoachDB:
                 SELECT 1 FROM athletes
                 JOIN meet_events ON meet_events.event_id = athletes.event_id
                 WHERE meet_events.meet_id = ?
-                  AND (athletes.covered_by = ? OR athletes.takeover_coach = ?)
+                  AND (athletes.covered_by = ? OR athletes.takeover_coach = ?
+                    OR (athletes.help_requested_at IS NOT NULL
+                        AND (athletes.help_acknowledged_by = ? OR athletes.help_requested_by = ?)))
                   AND athletes.active_state = 'active'
                   AND athletes.participation_status = 'active' LIMIT 1
-            """, (meet_id, coach, coach)).fetchone()
+            """, (meet_id, coach, coach, coach, coach)).fetchone()
             if busy:
                 continue
             stored = conn.execute(
@@ -2512,7 +2536,7 @@ class CompCoachDB:
             ("athlete", "athletes AS record " + event_scope,
              ("id", "event_id", "version")),
             ("phase", "phase_states AS record " + event_scope,
-             ("event_id", "phase", "started", "changed_at", "changed_by", "version")),
+             ("event_id", "phase", "started", "changed_at", "changed_by", "closed_at", "closed_by", "version")),
             ("wave", "pool_waves AS record " + event_scope, (
                 "event_id", "wave_key", "label", "sort_order", "is_active",
                 "is_visible", "activated_at", "activated_by", "version",
@@ -2949,6 +2973,8 @@ class CompCoachDB:
         meet_id: str,
         day_status: str,
         actor: str,
+        *,
+        require_closed_previous: bool = False,
     ) -> dict[str, Any]:
         """Schedule, activate, or close one competition day atomically."""
 
@@ -2974,6 +3000,12 @@ class CompCoachDB:
                 self._assert_competition_open(conn, meet["competition_id"])
             now = utc_now()
             if clean_status == "active":
+                if require_closed_previous and conn.execute(
+                    "SELECT 1 FROM meets WHERE competition_id = ? "
+                    "AND day_status = 'active' AND ended_at IS NULL AND id != ? LIMIT 1",
+                    (meet["competition_id"], meet_id),
+                ).fetchone():
+                    raise CompCoachError("Close the current competition day before starting another day.")
                 conn.execute(
                     """
                     UPDATE meets SET day_status = 'scheduled', updated_at = ?
@@ -3144,8 +3176,16 @@ class CompCoachDB:
         competition_date: str,
         event_names: Iterable[str],
         actor: str,
+        *,
+        activate: bool = True,
     ) -> dict[str, Any]:
-        """Close one day and atomically create one clean successor meet."""
+        """Close one day and prepare a successor in the same competition.
+
+        Existing days on the requested date retain their configuration and
+        records. The interactive flow passes ``activate=False`` so preparation
+        leaves the app between days until an explicit Start day action. The
+        historical default remains for scripts created before this option.
+        """
         clean_name = str(next_name or "").strip()
         clean_actor = str(actor or "").strip()
         clean_date = str(competition_date or "").strip()
@@ -3153,6 +3193,8 @@ class CompCoachDB:
             raise ValueError("Next-day competition name is required.")
         if not clean_actor:
             raise ValueError("Actor is required.")
+        if not isinstance(activate, bool):
+            raise TypeError("Activate must be true or false.")
         try:
             date.fromisoformat(clean_date)
         except ValueError as exc:
@@ -3177,9 +3219,25 @@ class CompCoachDB:
                 self._assert_competition_open(conn, source["competition_id"])
 
             existing = conn.execute(
-                "SELECT id FROM meets WHERE prepared_from_meet_id = ?",
+                "SELECT * FROM meets WHERE prepared_from_meet_id = ?",
                 (source_meet_id,),
             ).fetchone()
+            if existing is None and source["competition_date"] and clean_date <= source["competition_date"]:
+                raise ValueError("The next competition day must be after the current day.")
+            if existing is None and source["competition_id"]:
+                existing = conn.execute(
+                    "SELECT * FROM meets WHERE competition_id = ? AND competition_date = ? "
+                    "AND id != ? ORDER BY created_at, id LIMIT 1",
+                    (source["competition_id"], clean_date, source_meet_id),
+                ).fetchone()
+                if existing is not None and existing["ended_at"]:
+                    raise CompCoachError("The requested competition day is already closed. Choose a later date.")
+            if activate and conn.execute(
+                "SELECT 1 FROM meets WHERE competition_id = ? AND day_status = 'active' "
+                "AND ended_at IS NULL AND id != ? AND id != ? LIMIT 1",
+                (source["competition_id"], source_meet_id, existing["id"] if existing else ""),
+            ).fetchone():
+                raise CompCoachError("Close the current competition day before starting another day.")
             now = utc_now()
             if source["ended_at"]:
                 conn.execute(
@@ -3215,6 +3273,16 @@ class CompCoachDB:
                 (now, source_meet_id),
             )
             if existing:
+                if existing["prepared_from_meet_id"] is None:
+                    conn.execute(
+                        "UPDATE meets SET prepared_from_meet_id = ?, updated_at = ? WHERE id = ?",
+                        (source_meet_id, now, existing["id"]),
+                    )
+                if activate and not existing["ended_at"]:
+                    conn.execute(
+                        "UPDATE meets SET day_status = 'active', updated_at = ? WHERE id = ?",
+                        (now, existing["id"]),
+                    )
                 conn.commit()
                 return self.get_meet(existing["id"])  # type: ignore[return-value]
 
@@ -3226,7 +3294,7 @@ class CompCoachDB:
                     coordinators_json, admin_token, coordinator_token,
                     coach_token, ended_at, ended_by, prepared_from_meet_id,
                     competition_date, day_status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL, '', ?, ?, 'active', ?, ?)
+                ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL, '', ?, ?, ?, ?, ?)
                 """,
                 (
                     next_meet_id,
@@ -3240,6 +3308,7 @@ class CompCoachDB:
                     _new_token(),
                     source_meet_id,
                     clean_date,
+                    "active" if activate else "scheduled",
                     now,
                     now,
                 ),
@@ -3542,7 +3611,7 @@ class CompCoachDB:
                 raise CompCoachError("Competition not found.")
             rows = conn.execute(
                 """
-                SELECT phase, started, changed_at, changed_by, version
+                SELECT phase, started, changed_at, changed_by, closed_at, closed_by, version
                 FROM phase_states
                 WHERE event_id = ?
                 """,
@@ -3555,6 +3624,9 @@ class CompCoachDB:
                 "started": False,
                 "changed_at": None,
                 "changed_by": "",
+                "closed": False,
+                "closed_at": None,
+                "closed_by": "",
                 "version": 0,
             }
             for phase in ("pools", "de")
@@ -3566,6 +3638,9 @@ class CompCoachDB:
                 "started": bool(row["started"]),
                 "changed_at": row["changed_at"],
                 "changed_by": row["changed_by"],
+                "closed": bool(row["closed_at"]),
+                "closed_at": row["closed_at"],
+                "closed_by": row["closed_by"],
                 "version": int(row["version"]),
             }
         return states
@@ -3603,7 +3678,7 @@ class CompCoachDB:
             self._assert_open(conn, event_id)
             row = conn.execute(
                 """
-                SELECT phase, started, changed_at, changed_by, version
+                SELECT phase, started, changed_at, changed_by, closed_at, closed_by, version
                 FROM phase_states
                 WHERE event_id = ? AND phase = ?
                 """,
@@ -3615,6 +3690,9 @@ class CompCoachDB:
                     "started": bool(row["started"]),
                     "changed_at": row["changed_at"],
                     "changed_by": row["changed_by"],
+                    "closed": bool(row["closed_at"]),
+                    "closed_at": row["closed_at"],
+                    "closed_by": row["closed_by"],
                     "version": int(row["version"]),
                 }
                 if row is not None
@@ -3623,6 +3701,9 @@ class CompCoachDB:
                     "started": False,
                     "changed_at": None,
                     "changed_by": "",
+                    "closed": False,
+                    "closed_at": None,
+                    "closed_by": "",
                     "version": 0,
                 }
             )
@@ -3642,6 +3723,8 @@ class CompCoachDB:
                     "This phase changed on another phone. The board has been refreshed; "
                     "please try again."
                 )
+            if started and previous["closed"]:
+                raise CompCoachError("Pools are closed. Reopen Pools before starting them again.")
             if previous["started"] is started:
                 conn.commit()
                 return previous
@@ -3666,6 +3749,9 @@ class CompCoachDB:
                 "started": started,
                 "changed_at": now,
                 "changed_by": actor,
+                "closed": previous["closed"],
+                "closed_at": previous["closed_at"],
+                "closed_by": previous["closed_by"],
                 "version": new_version,
             }
             self._log_action(
@@ -5832,6 +5918,13 @@ class CompCoachDB:
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_open(conn, event_id)
+            if any(str(record.get("phase") or "pools") == "pools" for record in record_list):
+                closed = conn.execute(
+                    "SELECT closed_at FROM phase_states WHERE event_id = ? AND phase = 'pools'",
+                    (event_id,),
+                ).fetchone()
+                if closed and closed["closed_at"]:
+                    raise CompCoachError("Pools are closed. Reopen Pools before importing another Pools list.")
             self._sync_pool_waves(conn, event_id, record_list)
             non_advancers: list[dict[str, Any]] = []
             if confirmed_non_advancers is not None:
@@ -6115,6 +6208,16 @@ class CompCoachDB:
         if current_row is None:
             raise CompCoachError("Athlete not found.")
         current = dict(current_row)
+        if current["phase"] == "pools" and action in {
+            "live_update", "coverage_start", "claim", "takeover",
+            "help_request", "help_acknowledged", "coverage_request_accepted", "parent_call",
+        }:
+            phase = conn.execute(
+                "SELECT closed_at FROM phase_states WHERE event_id = ? AND phase = 'pools'",
+                (event_id,),
+            ).fetchone()
+            if phase and phase["closed_at"]:
+                raise CompCoachError("Pools are finished. Reopen Pools before live updates.")
         if expected_version is not None and int(current["version"]) != int(expected_version):
             raise ConcurrentUpdateError(
                 "This athlete changed on another phone. The board has been refreshed; please try again."
@@ -6710,6 +6813,158 @@ class CompCoachDB:
             conn.commit()
         return result
 
+    @staticmethod
+    def _pool_live_cleanup_changes() -> dict[str, Any]:
+        """End operational Pools duties without modifying recorded results."""
+        return {
+            "covered_by": "",
+            "covered_at": None,
+            "takeover_coach": "",
+            "takeover_at": None,
+            "takeover_by": "",
+            "call_status": "waiting",
+            "live_location": "",
+            "reported_at": None,
+            "reported_by": "",
+            "help_requested_by": "",
+            "help_requested_at": None,
+            "help_location": "",
+            "help_acknowledged_by": "",
+            "help_acknowledged_at": None,
+        }
+
+    @classmethod
+    def _pool_done_unknown_changes(cls, actor: str, *, at: str | None = None) -> dict[str, Any]:
+        """One cleanup policy for individual and whole-phase completion."""
+        return {
+            **cls._pool_live_cleanup_changes(),
+            "pool_wins": None,
+            "pool_losses": None,
+            "pool_results_unknown": 1,
+            "pool_result_at": at or utc_now(),
+            "pool_result_by": actor,
+        }
+
+    def _set_pool_phase_closed(
+        self, conn: sqlite3.Connection, event_id: str, actor: str, closed: bool,
+        *, completed_count: int = 0, at: str | None = None,
+    ) -> dict[str, Any]:
+        row = conn.execute(
+            "SELECT * FROM phase_states WHERE event_id = ? AND phase = 'pools'",
+            (event_id,),
+        ).fetchone()
+        previous = {
+            "phase": "pools",
+            "started": bool(row["started"]) if row else False,
+            "changed_at": row["changed_at"] if row else None,
+            "changed_by": row["changed_by"] if row else "",
+            "closed": bool(row["closed_at"]) if row else False,
+            "closed_at": row["closed_at"] if row else None,
+            "closed_by": row["closed_by"] if row else "",
+            "version": int(row["version"]) if row else 0,
+        }
+        if previous["closed"] is closed:
+            return {**previous, "completed_count": completed_count}
+        now = at or utc_now()
+        new = {
+            "phase": "pools", "started": False,
+            "changed_at": now, "changed_by": actor,
+            "closed": closed, "closed_at": now if closed else None,
+            "closed_by": actor if closed else "",
+            "version": previous["version"] + 1,
+        }
+        conn.execute(
+            "INSERT INTO phase_states "
+            "(event_id, phase, started, changed_at, changed_by, closed_at, closed_by, version) "
+            "VALUES (?, 'pools', 0, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(event_id, phase) DO UPDATE SET started = 0, "
+            "changed_at = excluded.changed_at, changed_by = excluded.changed_by, "
+            "closed_at = excluded.closed_at, closed_by = excluded.closed_by, "
+            "version = excluded.version",
+            (event_id, now, actor, new["closed_at"], new["closed_by"], new["version"]),
+        )
+        self._log_action(
+            conn, event_id=event_id, athlete_id=None,
+            action="pools_closed" if closed else "pools_reopened", actor=actor,
+            previous=previous, new={**new, "completed_count": completed_count},
+            version_after=new["version"],
+        )
+        conn.execute("UPDATE events SET updated_at = ? WHERE id = ?", (now, event_id))
+        return {**new, "completed_count": completed_count}
+
+    def close_pools(
+        self, event_id: str, actor: str,
+        *, expected_versions: Mapping[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Close every Pools wave, retaining known results and all athletes.
+
+        Only participating active athletes without a completion are marked
+        done with unknown results. ``expected_versions`` is an optional exact
+        snapshot of those pending athletes, so a reviewed bulk action cannot
+        silently include new arrivals or overwrite another coach's work.
+        """
+        clean_actor = str(actor or "").strip()
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            phase = conn.execute(
+                "SELECT closed_at FROM phase_states WHERE event_id = ? AND phase = 'pools'",
+                (event_id,),
+            ).fetchone()
+            already_closed = bool(phase and phase["closed_at"])
+            participating = [dict(row) for row in conn.execute(
+                "SELECT * FROM athletes WHERE event_id = ? AND phase = 'pools' "
+                "AND active_state = 'active' AND participation_status = 'active' ORDER BY id",
+                (event_id,),
+            ).fetchall()]
+            pending = [row for row in participating if not pool_is_complete(row)]
+            if expected_versions is not None and not already_closed:
+                try:
+                    expected = {str(key): int(value) for key, value in expected_versions.items()}
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise ValueError("The Pools completion confirmation is invalid.") from exc
+                if expected != {str(row["id"]): int(row["version"]) for row in pending}:
+                    raise ConcurrentUpdateError(
+                        "The pending Pools list changed on another phone. Review it and confirm closure again."
+                    )
+            now = utc_now()
+            released: list[str] = []
+            cleanup = self._pool_live_cleanup_changes()
+            for row in participating:
+                incomplete = not pool_is_complete(row)
+                if not incomplete and not any(row.get(field) != value for field, value in cleanup.items()):
+                    continue
+                self._update_athlete(
+                    conn, event_id=event_id, athlete_id=row["id"],
+                    changes=self._pool_done_unknown_changes(clean_actor, at=now) if incomplete else cleanup,
+                    action="pool_done_unknown" if incomplete else "pool_phase_cleanup", actor=clean_actor,
+                    expected_version=int(row["version"]), require_active=True,
+                )
+                released.extend([row["covered_by"], row["takeover_coach"],
+                                 row["help_acknowledged_by"], row["help_requested_by"]])
+            if any(released):
+                meet = self._meet_for_event(conn, event_id)
+                self._mark_released_coaches_available(conn, meet["id"], released, clean_actor)
+            result = self._set_pool_phase_closed(
+                conn, event_id, clean_actor, True, completed_count=len(pending), at=now,
+            )
+            conn.commit()
+        return result
+
+    def reopen_pools(self, event_id: str, actor: str) -> dict[str, Any]:
+        """Permit further Pools work without undoing athlete results or calls."""
+        clean_actor = str(actor or "").strip()
+        if not clean_actor:
+            raise ValueError("Actor is required.")
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_open(conn, event_id)
+            result = self._set_pool_phase_closed(conn, event_id, clean_actor, False)
+            conn.commit()
+        return result
+
     def set_pool_done_unknown(
         self,
         event_id: str,
@@ -6739,24 +6994,7 @@ class CompCoachDB:
                 conn,
                 event_id=event_id,
                 athlete_id=athlete_id,
-                changes={
-                    "pool_wins": None,
-                    "pool_losses": None,
-                    "pool_results_unknown": 1,
-                    "pool_result_at": utc_now(),
-                    "pool_result_by": actor,
-                    "covered_by": "",
-                    "covered_at": None,
-                    "call_status": "waiting",
-                    "live_location": "",
-                    "reported_at": None,
-                    "reported_by": "",
-                    "help_requested_by": "",
-                    "help_requested_at": None,
-                    "help_location": "",
-                    "help_acknowledged_by": "",
-                    "help_acknowledged_at": None,
-                },
+                changes=self._pool_done_unknown_changes(actor),
                 action="pool_done_unknown",
                 actor=actor,
                 expected_version=expected_version,
@@ -6809,6 +7047,7 @@ class CompCoachDB:
                 expected_version=expected_version,
                 require_active=True,
             )
+            self._set_pool_phase_closed(conn, event_id, actor, False)
             conn.commit()
         return result
 

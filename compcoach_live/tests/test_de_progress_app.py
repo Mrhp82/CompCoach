@@ -190,12 +190,12 @@ def test_archived_admin_tableau_form_is_read_only(progress_board):
     database.set_event_de_start_tableau(event["id"], 256, "Alex")
     database.finish_meet(meet["id"], "Alex")
     app = open_board(meet["id"], meet["admin_token"], "Alex", archive=True)
-    nav_named(app, "admin_nav_").set_value("Setup").run()
-    nav_named(app, "admin_setup_nav_").set_value("Events").run()
+    nav_named(app, "admin_archive_nav_").set_value("Overview").run()
     assert not app.exception
-    assert tableau_box(app, event).disabled
-    assert tableau_submit(app, event).disabled
-    assert tableau_box(app, event).value == 256
+    assert any("Starting DE tableau: T256" in item.value for item in app.caption)
+    assert not any(button.label == "Save DE starting tableau" for button in app.button)
+    assert not any(widget.label == "Starting DE tableau (optional)" for widget in app.selectbox)
+    assert database.get_event(event["id"])["de_start_tableau"] == 256
 
 
 def test_stale_admin_form_cannot_overwrite_tableau_changed_on_another_phone(progress_board):

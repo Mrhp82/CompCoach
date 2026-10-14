@@ -12,7 +12,26 @@ It stores no bout scores, imported DE bracket, seed, or ranking. It keeps the
 pool W/L summary, DE outcomes and byes, an optional starting tableau size,
 and optional manually linked AFM-versus-AFM opponents.
 
-## Included in v0.10.9
+## Included in v0.11.1
+
+### New in v0.11.1
+
+- **My Group** starts with the current bout and assigned athletes. Availability controls and the shared staff panels are kept in collapsed tools after the active list.
+- Actual strips use the same prominent type size as athlete names. Tap an event name to open its details.
+- **Team situation** uses compact athlete rows grouped by coach. Tap a row for its existing call, coverage, help and result controls.
+- **Share** puts **One shared parent link · this competition** first, before staff links and WhatsApp. The verified Admin identity is passed directly to the panel; missing competition information now produces an explicit message.
+- **Share → Show coach status to parents** is an Admin switch, **off by default** for every competition. When enabled, the parent page shows availability, last declared strip and time since the coach update. The choice persists across days; turning it off removes coach status from the public page and its data. Staff credentials are never included.
+- The ZIP keeps the repository layout: all application code stays in `compcoach_live`. No new Secrets are required.
+
+Validation: 1,445 local cases passed across the complete suite and focused reruns after updating the old layout assertions; 28 environment-dependent checks were skipped. Live PostgreSQL integration was not run because no test server was configured. Browser checks at 390 × 844 confirmed athletes visible before scrolling, matching name/strip sizes, working event and athlete taps, parent visibility on/off, and no horizontal overflow.
+
+### New in v0.11.0
+
+- **Share → Parent Updates** provides one common link for the whole competition, without login or role selection. Parents choose an athlete from the current day's active roster and report **Fencing now**, **On deck**, **In the hole** and an optional actual strip. The athlete name and actual strip are prominent. Each report includes its time and **Parent** source; it does not change assignments, results, coverage or coach availability. The same link follows the competition's active day and waits between days.
+- **Finish day only** archives today while keeping the same competition, Admin identity and day-management page open. **Prepare next day** prepares a scheduled day; **Start this day** activates it separately. Preparing a date that already exists reuses its staff, events and imports instead of duplicating or clearing it. Staff links wait when there is no active day and follow the next explicitly activated day. Finishing the whole competition remains a separate action.
+- Admin can **Close pools** for one event even when results are missing. Known totals are preserved; unfinished athletes across all waves become **Pool done · Not sure about results**. Calls, coverage and help are closed without eliminating athletes or guessing advancement. Late scores can still be entered. **Reopen pools** permits renewed pool work; completed entries keep their saved results.
+- **Share → Events to include** offers **All events** or **Choose events**. Select one or several events for the WhatsApp message; leaving the selection empty produces no message. This selection affects only the export, so an afternoon event can remain fully prepared in the app without appearing in the morning message.
+- A verified staff link, role and name are remembered on that browser for up to 30 days. Returning to the bare app address restores the board after checking the token and person again. The Admin PIN is never saved. **Home** remains an explicit destination, **Change** changes the identity and **Forget this device** clears the saved return. Practice and parent links do not replace the remembered staff identity. Storage restrictions or private browsing can require opening the staff link again.
 
 ### New in v0.10.9
 
@@ -348,21 +367,21 @@ the multi-phone checks in the deployment guide.
 - Athlete-specific coach exceptions take precedence over pod defaults on later
   imports.
 - Activity history and guarded Undo.
-- Mobile **Team situation** board and one WhatsApp schedule covering all events, with blue
+- Mobile **Team situation** board and a WhatsApp schedule covering selected or all events, with blue
   Main and orange Side markers and distinct coach-name emphasis.
 - Safe-area-aware top spacing so the competition title remains visible on
   desktop and mobile browsers.
 - Full Coach and Coordinator share links detected automatically from the
   browser URL, with `COMPCOACH_PUBLIC_URL` available as an explicit override.
 - Explicit end-of-day flow: finish the current day as a read-only archive and
-  return every Coach/Coordinator board to an operational zero, or finish it and
-  prepare the next day with the same staff and timezone. The next day may start
-  with zero to four events. Operational data starts clean and the previous
-  day's data remains preserved as an Admin archive.
+  return every Coach/Coordinator board to an operational zero. The competition
+  stays open. Prepare the next day with the same staff and timezone, then
+  explicitly start it when ready. A new day may have zero to four events;
+  existing prepared days retain their data and the previous day remains archived.
 - Coach and Coordinator pages check the day lifecycle every five seconds. An
-  old shared link automatically follows the prepared-day chain to the newest
-  day, preserving the role and a still-authorized identity. If no next day
-  exists, it shows a closed/waiting screen instead of the old live data.
+  old shared link follows the competition's active day, preserving the role and
+  a still-authorized identity. With no active day it shows a waiting screen;
+  scheduled days do not become live merely because they were prepared.
 - Admin can deliberately open a past day as a read-only archive without being
   redirected to its successor.
 - Pool cards no longer ask a coach to decide whether an athlete advanced. A
@@ -421,14 +440,22 @@ python -m pip install -r compcoach_live/requirements.txt
 The first screen creates a competition day. Its first event is optional, and up
 to four events can be added from Admin Setup. The Admin Share screen then provides:
 
+- One shared Parent Updates link for the competition, at the top
+- Admin switch to show coach status to parents (off by default)
 - Coach Team situation link
 - Coordinator link
 
-Each shared link is a credential for its day and automatically moves forward
-only through days created with `Prepare next day`. It can be regenerated from
+Each staff link is a credential for its day and follows the next active day of
+the same competition, including days prepared in Schedule. It can be regenerated from
 Admin Settings if it is forwarded outside the staff. Choosing a name at the
 `Who are you?` screen identifies actions and personalizes the dashboard; it is
 not a replacement for the link token.
+
+Parents use the separate common link and choose an athlete rather than a staff
+identity. They can report call status and actual strip. Admin can optionally
+show coach availability, the last declared strip and time since the update
+through the switch at the top of Share. This is disabled by default. Completed Pools,
+absent, withdrawn and eliminated athletes are excluded from their active list.
 
 Save the private Admin URL immediately after creating the first competition
 day.
@@ -465,9 +492,9 @@ all staff.
 The database also stores a parent competition and its scheduled/active/closed
 days, competition date range and assets, coach membership and daily presence,
 and coach-assignment intervals. These controls are available in Admin
-`Setup → Settings`. The established `Prepare next day` shortcut remains
-available, while `Schedule` can prepare multiple future days without adding
-them to today's operational board.
+`Setup → Settings`. The `Prepare next day` shortcut and `Schedule` prepare future
+days without activating them. Closing today's board opens **Days**, where a
+scheduled day can be started after today has finished.
 
 ## Refresh and phone notifications
 

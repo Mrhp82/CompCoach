@@ -173,17 +173,19 @@ def test_takeover_and_actual_covering_coach_do_not_reassign_the_planned_group(gr
     assert db.get_athlete(called["event_id"], called["id"])["de_coaches"] == original
 
 
-def test_busy_coach_has_one_current_card_above_the_other_coach_groups(grouped_scenario):
+def test_busy_coach_keeps_current_athlete_in_compact_team_list(grouped_scenario):
     db, meet, _events, athletes = grouped_scenario
     called = athletes["EXAMPLE Called"]
     db.cover_athlete(called["event_id"], called["id"], "Casey", "Casey", location="M4")
     app = _team(meet, view="Covered Now")
     cards = [value for value in markdown_values(app) if "class='cc-athlete'" in value]
     assert sum(called["name"] in value for value in cards) == 1
-    assert called["name"] in cards[0]
-    assert _group_card_names(app, athletes) == {"Coaches Sam · Taylor": ["EXAMPLE Covered"]}
+    assert set(_group_card_names(app, athletes)["Coaches Sam · Taylor"]) == {"EXAMPLE Called", "EXAMPLE Covered"}
+    rows = [section for section in app.expander if "**EXAMPLE" in section.label]
+    assert len(rows) == 2
+    assert all(not section.proto.expanded for section in rows)
     keys = [button.key for button in app.button if button.key is not None]
     assert len(keys) == len(set(keys))
-    assert keys.count(f"current_won_{called['id']}") == 1
-    assert keys.index(f"current_won_{called['id']}") < keys.index(f"won_{athletes['EXAMPLE Covered']['id']}")
+    assert f"current_won_{called['id']}" not in keys
+    assert keys.count(f"won_{called['id']}") == 1
     assert not app.exception

@@ -71,7 +71,8 @@ def test_authenticated_admin_home_clears_url_and_keeps_pin_gate_for_new_session(
     button(app, "← Home").click().run()
 
     assert not app.exception
-    assert dict(app.query_params) == {}
+    assert qvalue(app, "home") == "1"
+    assert not qvalue(app, "event") and not qvalue(app, "token")
     assert any(item.value == "🟢 Active now" for item in app.subheader)
     assert not any(item.label == "Admin PIN" for item in app.text_input)
     assert database.get_meet(day["id"])["day_status"] == "active"
@@ -81,7 +82,7 @@ def test_authenticated_admin_home_clears_url_and_keeps_pin_gate_for_new_session(
     assert not any(item.label == "Open Admin" for item in fresh.button)
 
 
-def test_finish_day_returns_home_and_preserves_read_only_history(database):
+def test_finish_day_stays_in_same_competition_and_preserves_read_only_history(database):
     day, event = create_day(database)
     app = open_day(day)
     settings_day(app)
@@ -89,8 +90,9 @@ def test_finish_day_returns_home_and_preserves_read_only_history(database):
     button(app, "Finish day only").click().run()
 
     assert not app.exception
-    assert dict(app.query_params) == {}
-    assert any(item.value == "⏸️ No active competition" for item in app.subheader)
+    assert qvalue(app, "event") == day["id"] and qvalue(app, "archive") == "1"
+    assert qvalue(app, "who") == "Carmine"
+    assert any(item.value == "Competition days" for item in app.subheader)
     assert database.get_active_competition_day(day["competition_id"]) is None
     assert database.list_athletes(event["id"])[0]["name"] == "EXAMPLE Alex"
 
@@ -108,8 +110,10 @@ def test_finish_day_returns_home_and_preserves_read_only_history(database):
     # Its follow-up widget snapshot is stale; a new browser session reads the
     # same saved archive and exercises its controls without that harness issue.
     app = open_day(database.get_meet(day["id"]), archive=True)
-    settings_day(app)
-    assert button(app, "Save settings").disabled
+    nav(app, "admin_archive_nav_", "Overview")
+    assert any("EXAMPLE Alex" in item.value for item in app.markdown)
+    assert not any(item.label == "Save settings" for item in app.button)
+    assert not any(item.label == "Competition name" for item in app.text_input)
     assert not app.exception
 
 
@@ -130,11 +134,12 @@ def test_finish_competition_closes_future_days_and_leaves_public_neutral(databas
     button(app, "Finish competition & return Home").click().run()
 
     assert not app.exception
-    assert dict(app.query_params) == {}
+    assert qvalue(app, "home") == "1"
+    assert not qvalue(app, "event") and not qvalue(app, "token")
     assert database.get_competition(day["competition_id"])["status"] == "closed"
     assert database.get_meet(future["id"])["day_status"] == "closed"
     assert database.list_athletes(event["id"])[0]["name"] == "EXAMPLE Alex"
-    assert any(item.value == "⏸️ No active competition" for item in app.subheader)
+    assert any(item.value == "⏸️ No active competition day" for item in app.subheader)
     assert not any(item.label == "Prepare day" for item in app.button)
 
     coach.run()
@@ -145,12 +150,11 @@ def test_finish_competition_closes_future_days_and_leaves_public_neutral(databas
     assert not any(item.label == "← Home" for item in coach.button)
 
     archived = open_day(database.get_meet(future["id"]), archive=True)
-    settings_day(archived)
+    assert any(item.value == "Competition days" for item in archived.subheader)
     assert not any(item.label == "Prepare next day" for item in archived.button)
-    nav(archived, "settings_section_", "Competition")
+    nav(archived, "admin_archive_nav_", "Overview")
     assert not any(item.label == "Save competition profile" for item in archived.button)
     assert not archived.get("file_uploader")
-    nav(archived, "settings_section_", "Schedule")
     assert not any(item.label in {"Activate this day", "Create scheduled day"} for item in archived.button)
     assert not archived.exception
 
@@ -188,7 +192,7 @@ def test_scheduled_day_is_separate_on_home_and_external_activation_refreshes_pub
     )
     app = open_day(day, archive=True)
     button(app, "← Home").click().run()
-    assert any(item.value == "⏸️ No active competition" for item in app.subheader)
+    assert any(item.value == "⏸️ No active competition day" for item in app.subheader)
     assert button(app, "Prepare day")
     assert not any(item.label == "Open Admin" for item in app.button)
 

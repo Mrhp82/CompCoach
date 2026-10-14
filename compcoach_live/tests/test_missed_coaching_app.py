@@ -193,9 +193,7 @@ def test_admin_archive_retains_evidence_and_only_offers_read_only_review(missed_
     incident = db.list_missed_coaching(meet["id"])[0]
     db.finish_meet(meet["id"], "Carmine")
     app = open_board(meet["id"], meet["admin_token"], "Carmine", archive=True)
-    nav_named(app, "admin_nav_").set_value("Setup").run()
-    nav_named(app, "admin_setup_nav_").set_value("Settings").run()
-    nav_named(app, "settings_section_").set_value("Coaching review").run()
+    nav_named(app, "admin_archive_nav_").set_value("Overview").run()
     assert not app.exception
     section = _review(app)
     assert athlete["name"] in _text(section)

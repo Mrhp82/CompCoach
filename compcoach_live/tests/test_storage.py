@@ -223,6 +223,9 @@ def test_phase_states_default_to_not_started_and_update_independently():
                 "started": False,
                 "changed_at": None,
                 "changed_by": "",
+                "closed": False,
+                "closed_at": None,
+                "closed_by": "",
                 "version": 0,
             },
             "de": {
@@ -230,6 +233,9 @@ def test_phase_states_default_to_not_started_and_update_independently():
                 "started": False,
                 "changed_at": None,
                 "changed_by": "",
+                "closed": False,
+                "closed_at": None,
+                "closed_by": "",
                 "version": 0,
             },
         }

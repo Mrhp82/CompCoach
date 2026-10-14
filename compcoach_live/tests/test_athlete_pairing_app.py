@@ -55,7 +55,11 @@ def scenario(database):
 
 def _open(meet, view="My Group", *, role="coach", actor="Sam", archive=False):
     app = open_board(meet["id"], meet[f"{role}_token"], actor, archive=archive)
-    navigation = nav_named(app, f"{role}_nav_")
+    if archive and role == "admin":
+        navigation = nav_named(app, "admin_archive_nav_")
+        view = "Overview" if view == "Live" else view
+    else:
+        navigation = nav_named(app, f"{role}_nav_")
     if navigation.value != view:
         navigation.set_value(view).run()
     assert not app.exception
@@ -170,6 +174,21 @@ def test_archived_admin_can_review_shared_pairing_but_has_no_inline_action_widge
     assert any(section.label.startswith("AFM vs AFM ·") for section in app.expander)
     assert not any("_athlete_pair_" in (widget.key or "") for widget in app.button)
     assert not any("_athlete_pair_" in (widget.key or "") for widget in app.selectbox)
+    assert list_de_bouts(database, event["id"]) == before
+
+
+def test_archived_admin_retains_resolved_pairing_history_without_result_corrections(scenario):
+    database, meet, event, alex, robin, _taylor = scenario
+    create_de_bout(database, event["id"], alex["id"], robin["id"], actor="Sam", round_label="T32")
+    database.mark_result(event["id"], alex["id"], outcome="won", actor="Sam")
+    before = list_de_bouts(database, event["id"])
+    assert before[0]["status"] == "resolved"
+    database.finish_meet(meet["id"], "Carmine")
+    app = _open(meet, "Overview", role="admin", actor="Carmine", archive=True)
+    assert not app.exception
+    assert any(section.label == "Previous AFM bouts · 1" for section in app.expander)
+    assert any(f"{alex['name']} won · {robin['name']} out" in item.value for item in app.success)
+    assert not any((button.key or "").startswith("archive_") for button in app.button)
     assert list_de_bouts(database, event["id"]) == before
 
 

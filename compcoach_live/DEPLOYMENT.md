@@ -5,6 +5,11 @@ repository. Supabase conserva dati, storico, loghi e mappe; l'hosting Streamlit
 esegue l'app e fornisce il link da aprire dal telefono. Chiudere il Codespace
 non fermerà l'app pubblicata sull'hosting.
 
+L'aggiornamento v0.11.1 mantiene questa struttura e non richiede nuovi Secrets.
+Includi anche `compcoach_live/frontend/remembered_access/index.html` nel commit:
+è il componente che ricorda nome e link staff sul dispositivo. Le nuove tabelle
+e colonne vengono aggiunte all'avvio senza eliminare lo storico.
+
 Il codice è predisposto per il collegamento. La pubblicazione e il trasferimento
 dei dati richiedono ancora un progetto Supabase e le credenziali private del
 tuo account. Non inviare password o chiavi nelle chat, negli screenshot o su

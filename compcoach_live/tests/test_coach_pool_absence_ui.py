@@ -242,7 +242,9 @@ def test_completed_pool_results_survive_absence_and_restore_from_live(pool_scena
     app = open_board(meet["id"], meet["coach_token"], "Carmine")
     assert any(s.label == "Completed pool results · 1" for s in app.expander)
     nav_named(app, "coach_nav_").set_value("Live").run()
-    nav_named(app, "live_view_").set_value("No Current Call").run()
+    # Completed pools are edited in Pool results, rather than reappearing in
+    # the working athlete list. Attendance corrections remain available there.
+    assert any(s.label == "Edit completed pool entries" for s in app.expander)
     _athlete_button(app, "Mark absent", alex["id"]).click().run()
     _athlete_button(app, "Confirm absent", alex["id"]).click().run()
     assert not app.exception
