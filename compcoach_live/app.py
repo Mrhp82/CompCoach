@@ -49,6 +49,7 @@ try:
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
+        render_competition_title,
     )
     from compcoach_live.ocr_import import parse_screenshot
     from compcoach_live.parsers import parse_pasted_table, import_name_noise_reason
@@ -103,6 +104,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
+        render_competition_title,
     )
     from ocr_import import parse_screenshot
     from parsers import parse_pasted_table, import_name_noise_reason
@@ -140,7 +142,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.2"
+APP_VERSION = "0.11.3"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -187,6 +189,11 @@ st.markdown(
       [data-testid="stForm"] {border-radius:16px;}
       [data-testid="stVerticalBlockBorderWrapper"] {border-radius:16px;}
       .cc-topline {display:flex; justify-content:space-between; align-items:center; gap:.5rem;}
+      .cc-topline h1 {display:flex; align-items:center; gap:.5rem; min-width:0;
+                      margin:0; padding:0; line-height:1.15;}
+      .cc-topline h1 > span {min-width:0; overflow-wrap:anywhere;}
+      .cc-topline .cc-role {flex:none;}
+      .cc-competition-logo {display:block; flex:none; width:52px; height:52px; object-fit:contain;}
       .cc-role {font-size:.72rem; font-weight:800; letter-spacing:.04em; padding:.22rem .5rem;
                 border-radius:999px; background:#eef2ff; color:#303f9f; white-space:nowrap;}
       .cc-identity {background:#f8fafc; border:1px solid #d0d5dd; border-radius:14px;
@@ -304,12 +311,12 @@ st.markdown(
       @media (max-width: 520px) {
         .block-container {padding-left:.55rem; padding-right:.55rem;}
         h1 {font-size:1.48rem !important;}
+        .cc-competition-logo {width:44px; height:44px;}
         [data-testid="stHorizontalBlock"] {gap:.35rem;}
       }
       @media (max-width: 380px) {
-        .cc-board-heading img {width:30px; height:30px;}
-        /* Wrap the title inside the tap row rather than moving the map below it. */
-        .cc-board-heading h3 {max-inline-size:8ch;}
+        .cc-topline, .cc-topline h1 {gap:.25rem;}
+        .cc-topline .cc-role {padding-inline:.25rem; letter-spacing:0;}
       }
     </style>
     """,
@@ -1064,11 +1071,7 @@ def render_header(event: dict, role: str) -> None:
     role_label = {"admin": "ADMIN", "coordinator": "COORDINATOR", "coach": "COACH"}[role]
     parent = db.get_competition(str(event.get("competition_id") or "")) or {}
     title = parent.get("name") or event["name"]
-    st.markdown(
-        f"<div class='cc-topline'><h1>🤺 {esc(title)}</h1>"
-        f"<span class='cc-role'>{role_label}</span></div>",
-        unsafe_allow_html=True,
-    )
+    render_competition_title(parent, title, role_label, asset_store=asset_store)
     st.caption(" · ".join(part for part in [str(event.get("competition_date") or ""), str(parent.get("location") or ""), str(event["name"]) if event["name"] != title else ""] if part))
     if event.get("ended_at") or event.get("day_status") == "scheduled":
         render_competition_branding(db, event, asset_store=asset_store)

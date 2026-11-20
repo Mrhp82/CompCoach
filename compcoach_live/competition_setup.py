@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from base64 import b64encode
 from datetime import date
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
@@ -151,6 +152,30 @@ def _logo_badge(digest: str, _data: bytes) -> str:
     return "data:image/png;base64," + b64encode(out.getvalue()).decode("ascii")
 
 
+def render_competition_title(competition: dict[str, Any], title: str, role_label: str, *,
+                             asset_store: LocalAssetStore | SupabaseAssetStore) -> None:
+    """Keep the tournament's mark and name together above all staff views."""
+    try:
+        logo = _load_asset(asset_store, competition, "logo")
+        badge = _logo_badge(logo.image.sha256, logo.image.data) if logo else ""
+    except (ValueError, OSError):
+        badge = ""
+
+    label = escape(str(title))
+    icon = ""
+    if badge:
+        # The adjacent name identifies this decorative logo for screen readers.
+        icon = f'<img class="cc-competition-logo" src="{badge}" alt="" width="52" height="52">'
+    else:
+        label = f"🤺 {label}"
+    header = (f'<div class="cc-topline"><h1>{icon}<span>{label}</span></h1>'
+              f'<span class="cc-role">{escape(role_label)}</span></div>')
+    if badge:
+        st.html(header)  # Display the validated inline PNG without a second request.
+    else:
+        st.markdown(header, unsafe_allow_html=True)
+
+
 def _has_map(store, competition: dict[str, Any]) -> bool:
     # The private store already has a scoped reference in the profile. Don't
     # fetch the full image until someone actually opens it.
@@ -185,20 +210,11 @@ def render_board_heading(db: Any, meet: dict[str, Any], view: str, *,
         profile = db.get_competition(cid) if cid else None
     except (CompCoachError, ValueError):
         profile = None
-    if not profile:
-        st.markdown(f"### {title}")
-        return
-
     try:
-        logo = _load_asset(asset_store, profile, "logo")
-        badge = _logo_badge(logo.image.sha256, logo.image.data) if logo else ""
-    except (ValueError, OSError):
-        badge = ""  # A missing or damaged logo must not hide the map or athletes.
-    try:
-        has_map = _has_map(asset_store, profile)
+        has_map = bool(profile) and _has_map(asset_store, profile)
     except (ValueError, OSError):
         has_map = False
-    if not badge and not has_map:
+    if not has_map:
         st.markdown(f"### {title}")
         return
 
@@ -206,20 +222,14 @@ def render_board_heading(db: Any, meet: dict[str, Any], view: str, *,
     # competition/day/view's open state. This flag is not a widget key.
     scope = f"{cid}_{meet['id']}_{'group' if view == 'My Group' else 'team'}"
     state_key = f"staff_map_visible_{scope}"
-    opened = has_map and st.session_state.get(state_key, False)
+    opened = st.session_state.get(state_key, False)
     with st.container(horizontal=True, horizontal_alignment="distribute",
                       vertical_alignment="center", gap="xsmall"):
-        img = (f'<img alt="Competition logo" src="{badge}" width="36" height="36" '
-               'style="object-fit:contain;flex:none">' if badge else "")
-        # Title is a fixed label; badge is a locally generated PNG data URI.
-        st.html('<div class="cc-board-heading" style="display:flex;align-items:center;gap:.4rem">'
-                f'{img}<h3 style="margin:0;padding:0;line-height:1.2">{title}</h3></div>',
-                width="content")
-        if has_map:
-            st.button("Close map" if opened else "Strip map",
-                      icon=":material/close:" if opened else ":material/map:",
-                      key=f"staff_map_button_{scope}", width="content",
-                      on_click=_toggle_board_map, args=(state_key,))
+        st.html(f'<h3 style="margin:0;padding:0;line-height:1.2">{title}</h3>', width="content")
+        st.button("Close map" if opened else "Strip map",
+                  icon=":material/close:" if opened else ":material/map:",
+                  key=f"staff_map_button_{scope}", width="content",
+                  on_click=_toggle_board_map, args=(state_key,))
     if opened:
         _show_saved_map(asset_store, profile, key=f"staff_map_original_{scope}")
 
@@ -344,7 +354,7 @@ def render_competition_branding(
     asset_store: LocalAssetStore | SupabaseAssetStore | None = None,
     show_assets: bool = True,
 ) -> None:
-    """Render compact competition branding plus an optional strip-map viewer."""
+    """Render competition details and an optional map below the shared title."""
 
     competition_id = _competition_id(meet)
     if not competition_id:
@@ -353,7 +363,6 @@ def render_competition_branding(
     try:
         competition = _require_competition(db, competition_id)
         store = asset_store or LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
-        logo = _load_asset(store, competition, "logo") if show_assets else None
     except (CompCoachError, AssetStoreError, ValueError) as exc:
         st.warning(f"Competition details are temporarily unavailable: {exc}")
         return
@@ -366,23 +375,10 @@ def render_competition_branding(
     name = str(competition.get("name") or "").strip()
     detail_line = " · ".join(value for value in (location, dates) if value)
 
-    if logo is not None:
-        logo_column, details_column = st.columns([1, 4], vertical_alignment="center")
-        with logo_column:
-            # A small inline image keeps the dashboard light on a phone.
-            badge = _logo_badge(logo.image.sha256, logo.image.data)
-            st.html(f'<img src="{badge}" alt="Competition logo" width="72" '
-                    'style="max-width:100%;height:auto;display:block">')
-        with details_column:
-            if name and name != str(meet.get("name") or "").strip():
-                st.markdown(f"**{name}**")
-            if detail_line:
-                st.caption(detail_line)
-    else:
-        if name and name != str(meet.get("name") or "").strip():
-            st.markdown(f"**{name}**")
-        if detail_line:
-            st.caption(detail_line)
+    if name and name != str(meet.get("name") or "").strip():
+        st.markdown(f"**{name}**")
+    if detail_line:
+        st.caption(detail_line)
 
     if not show_assets:
         return
