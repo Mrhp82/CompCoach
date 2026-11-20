@@ -8,11 +8,14 @@ asset adapter.
 
 from __future__ import annotations
 
+from base64 import b64encode
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
 import streamlit as st
+from PIL import Image, ImageOps
 
 try:
     from compcoach_live.asset_store import (
@@ -46,6 +49,107 @@ COMMON_TIMEZONES = (
 )
 
 AssetKind = Literal["logo", "strip_map"]
+
+# Deliver the validated original in the existing app session. Preview, open and
+# save all use the same bytes, without another HTTP request for a media file.
+_VIEWER_HTML = """
+<div class="viewer">
+  <p role="status">Opening image…</p>
+  <img hidden>
+  <div class="actions" hidden>
+    <a class="open" target="_blank" rel="noopener">Open original</a>
+    <a class="save">Download original</a>
+  </div>
+</div>
+"""
+_VIEWER_CSS = """
+.viewer {max-width:100%; font-family:inherit; color:inherit}
+.viewer [hidden] {display:none!important}
+.viewer p {margin:0 0 .4rem}
+.viewer img {display:block; max-width:100%; height:auto}
+.viewer .map {width:100%}
+.viewer .logo {width:auto; max-width:min(160px,100%); max-height:160px; object-fit:contain}
+.actions {display:flex; gap:.5rem; margin-top:.5rem; flex-wrap:wrap}
+.actions a {display:inline-flex; align-items:center; justify-content:center;
+  min-height:44px; padding:0 .75rem; box-sizing:border-box; border:1px solid currentColor;
+  border-radius:.5rem; color:inherit; text-decoration:underline; cursor:pointer}
+"""
+_VIEWER_JS = """
+export default function ({data, parentElement}) {
+  const root = parentElement.querySelector(".viewer");
+  const img = root.querySelector("img"), note = root.querySelector("p");
+  const actions = root.querySelector(".actions");
+  const open = root.querySelector(".open"), save = root.querySelector(".save");
+  let url, active = true, inline = false;
+  const hide = () => {
+    actions.hidden = true; img.hidden = true; note.hidden = false;
+    open.removeAttribute("href"); save.removeAttribute("href");
+  };
+  hide();
+  note.textContent = "Opening image…";
+  const fail = () => {
+    hide();
+    note.textContent = "This image could not be opened. Close and reopen this section to retry.";
+  };
+  try {
+    const ext = {"image/jpeg":"jpg", "image/png":"png", "image/webp":"webp"}[data.mime];
+    const logo = data.kind === "logo";
+    if (!ext || (!logo && data.kind !== "strip_map")) throw Error();
+    const raw = atob(data.body);
+    if (!raw.length || raw.length !== data.size) throw Error();
+    const magicOK = ext === "jpg" ? raw.startsWith("\\xFF\\xD8\\xFF")
+      : ext === "png" ? raw.startsWith("\\x89PNG\\r\\n\\x1A\\n")
+      : raw.startsWith("RIFF") && raw.slice(8,12) === "WEBP";
+    if (!magicOK) throw Error();
+    const bytes = new Uint8Array(raw.length);
+    for (let i=0; i<raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    url = URL.createObjectURL(new Blob([bytes], {type:data.mime}));
+    img.alt = logo ? "Competition logo" : "Strip map";
+    img.className = logo ? "logo" : "map";
+    save.download = (logo ? "competition-logo." : "strip-map.") + ext;
+    save.textContent = logo ? "Download original competition logo" : "Download original strip map";
+    img.onload = () => {
+      if (!active) return;
+      img.hidden = false; note.hidden = true;
+      open.href = url; save.href = url; actions.hidden = false;
+    };
+    img.onerror = () => {
+      if (!active) return;
+      if (inline) { fail(); return; }
+      inline = true;
+      img.src = "data:" + data.mime + ";base64," + data.body;
+    };
+    img.src = url;
+  } catch { fail(); }
+  return () => {
+    active = false;
+    img.onload = img.onerror = null;
+    if (url) URL.revokeObjectURL(url);
+  };
+}
+"""
+
+
+def _show_original(asset: StoredAsset, *, key: str) -> None:
+    image = asset.image
+    viewer = st.components.v2.component(
+        "compcoach_competition_image", html=_VIEWER_HTML, css=_VIEWER_CSS, js=_VIEWER_JS
+    )
+    viewer(data={
+        "kind": asset.kind, "mime": image.content_type, "size": image.byte_size,
+        "body": b64encode(image.data).decode("ascii"),
+    }, key=key)
+
+
+@st.cache_data(max_entries=32, ttl=300, show_spinner=False)
+def _logo_badge(digest: str, _data: bytes) -> str:
+    # Hash the validated original by its SHA-256, not by a competition's name.
+    with Image.open(BytesIO(_data)) as src:
+        src.thumbnail((144, 144), Image.Resampling.LANCZOS)
+        thumb = ImageOps.exif_transpose(src).convert("RGBA")
+        out = BytesIO()
+        thumb.save(out, format="PNG")
+    return "data:image/png;base64," + b64encode(out.getvalue()).decode("ascii")
 
 
 def render_competition_profile(
@@ -177,7 +281,6 @@ def render_competition_branding(
         competition = _require_competition(db, competition_id)
         store = asset_store or LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
         logo = _load_asset(store, competition, "logo")
-        strip_map = _load_asset(store, competition, "strip_map")
     except (CompCoachError, AssetStoreError, ValueError) as exc:
         st.warning(f"Competition details are temporarily unavailable: {exc}")
         return
@@ -193,7 +296,10 @@ def render_competition_branding(
     if logo is not None:
         logo_column, details_column = st.columns([1, 4], vertical_alignment="center")
         with logo_column:
-            st.image(logo.image.data, width=72)
+            # A small inline image keeps the dashboard light on a phone.
+            badge = _logo_badge(logo.image.sha256, logo.image.data)
+            st.html(f'<img src="{badge}" alt="Competition logo" width="72" '
+                    'style="max-width:100%;height:auto;display:block">')
         with details_column:
             if name and name != str(meet.get("name") or "").strip():
                 st.markdown(f"**{name}**")
@@ -205,18 +311,27 @@ def render_competition_branding(
         if detail_line:
             st.caption(detail_line)
 
-    if strip_map is not None:
-        with st.expander("🗺️ View strip map"):
-            st.image(strip_map.image.data, width="stretch")
-            st.download_button(
-                "Download full-resolution map",
-                data=strip_map.image.data,
-                file_name=strip_map.path.name,
-                mime=strip_map.image.content_type,
-                key=f"header_strip_map_download_{competition_id}",
-                width="stretch",
-                on_click="ignore",
-            )
+    has_map = bool(competition.get("strip_map_path"))
+    # Older local installations may have an image without a stored reference.
+    legacy_map = None
+    if not has_map and isinstance(store, LocalAssetStore):
+        try:
+            legacy_map = _load_asset(store, competition, "strip_map")
+        except (AssetStoreError, ValueError) as exc:
+            st.warning(f"The strip map could not be opened: {exc}")
+    if has_map or legacy_map is not None:
+        panel = st.expander("🗺️ View strip map", key=f"view_map_{competition_id}", on_change="rerun")
+        if panel.open:
+            with panel:
+                try:
+                    strip_map = legacy_map or _load_asset(store, competition, "strip_map")
+                except (AssetStoreError, ValueError) as exc:
+                    st.warning(f"The strip map could not be opened: {exc}")
+                else:
+                    if strip_map is not None:
+                        _show_original(strip_map, key=f"map_original_{competition_id}")
+                    else:
+                        st.warning("The saved strip map could not be found.")
 
 
 def _render_asset_editor(
@@ -231,29 +346,20 @@ def _render_asset_editor(
     save_label: str,
 ) -> None:
     expanded = kind == "logo" and not competition.get("logo_path")
-    with st.expander(title, expanded=expanded):
+    panel = st.expander(title, expanded=expanded, key=f"edit_image_{kind}_{competition_id}",
+                        on_change="rerun")
+    if not panel.open:
+        return
+    with panel:
         try:
             current = _load_asset(store, competition, kind)
         except (AssetStoreError, ValueError) as exc:
-            current = None
             st.warning(f"The current {title.lower()} could not be opened: {exc}")
-
-        if current is not None:
-            if kind == "logo":
-                st.image(current.image.data, width=160)
-            else:
-                st.image(current.image.data, width="stretch")
-            st.download_button(
-                f"Download original {title.lower()}",
-                data=current.image.data,
-                file_name=current.path.name,
-                mime=current.image.content_type,
-                key=f"download_{kind}_{competition_id}",
-                width="stretch",
-                on_click="ignore",
-            )
         else:
-            st.caption(f"No {title.lower()} saved yet.")
+            if current is not None:
+                _show_original(current, key=f"edit_original_{kind}_{competition_id}")
+            else:
+                st.caption(f"No {title.lower()} saved yet.")
 
         with st.form(f"upload_{kind}_{competition_id}"):
             uploaded = st.file_uploader(
