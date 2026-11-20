@@ -196,6 +196,17 @@ class LocalAssetStore:
         map_id = _validated_id(map_id, "map_id")
         return self._load(competition_id, "strip_map", map_id)
 
+    def has_strip_map(self, competition_id: str, *, map_id: str = "main") -> bool:
+        """Check for a legacy local map without reading or decoding the image."""
+        stem = self._asset_stem(_validated_id(competition_id, "competition_id"),
+                                "strip_map", _validated_id(map_id, "map_id"))
+        return bool(self._existing_files(stem))
+
+    @staticmethod
+    def _existing_files(stem: Path) -> list[Path]:
+        paths = (stem.with_suffix(f".{ext}") for ext, _mime in _FORMAT_DETAILS.values())
+        return [path for path in paths if path.is_file()]
+
     def _save(
         self,
         competition_id: str,
@@ -241,11 +252,7 @@ class LocalAssetStore:
         map_id: str | None,
     ) -> StoredAsset | None:
         stem = self._asset_stem(competition_id, kind, map_id)
-        candidates = [
-            stem.with_suffix(f".{extension}")
-            for extension, _mime in _FORMAT_DETAILS.values()
-            if stem.with_suffix(f".{extension}").is_file()
-        ]
+        candidates = self._existing_files(stem)
         if not candidates:
             return None
         if len(candidates) > 1:

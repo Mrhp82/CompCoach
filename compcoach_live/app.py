@@ -46,6 +46,7 @@ try:
     )
     from compcoach_live.de_bouts import list_de_bouts
     from compcoach_live.competition_setup import (
+        render_board_heading,
         render_competition_branding,
         render_competition_profile,
     )
@@ -99,6 +100,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
     from de_bouts import list_de_bouts
     from competition_setup import (
+        render_board_heading,
         render_competition_branding,
         render_competition_profile,
     )
@@ -138,7 +140,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.11.2"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -303,6 +305,11 @@ st.markdown(
         .block-container {padding-left:.55rem; padding-right:.55rem;}
         h1 {font-size:1.48rem !important;}
         [data-testid="stHorizontalBlock"] {gap:.35rem;}
+      }
+      @media (max-width: 380px) {
+        .cc-board-heading img {width:30px; height:30px;}
+        /* Wrap the title inside the tap row rather than moving the map below it. */
+        .cc-board-heading h3 {max-inline-size:8ch;}
       }
     </style>
     """,
@@ -3043,7 +3050,6 @@ def render_live_board(event: dict, role: str, actor: str) -> None:
     active_de = [a for a in active if a["phase"] == "de"]
     statuses = db.list_coach_availability(event["id"])
     available_count = sum(bool(row.get("is_available")) for row in statuses)
-    st.markdown("### Team situation")
     current_status = next((row for row in statuses if row["coach_name"] == actor), {})
     st.markdown(
         f"<div class='cc-summary'><span class='cc-now'>{len(current_needs)} need coverage</span> · "
@@ -3341,7 +3347,6 @@ def render_my_group(event: dict, role: str, actor: str) -> None:
     de_count = sum(row.get("phase") == "de" and actor in assigned_coach_names(row) for row in working_mine)
     temporary_count = sum(row in temporary for row in working_mine)
 
-    st.markdown("### My group")
     current_status = next((row for row in db.list_coach_availability(event["id"])
                            if row["coach_name"] == actor), {})
     if current_status.get("is_busy"):
@@ -5335,6 +5340,9 @@ def render_event(event: dict, role: str) -> None:
 
     nav_options = ["My Group", "Live", "Setup", "Share"] if role == "admin" else ["Live", "Activity"] if role == "coordinator" else ["My Group", "Live"]
     nav = select_nav(nav_options, f"{role}_nav_{event['id']}")
+    coach_board = nav in {"My Group", "Live"}
+    if coach_board:
+        render_board_heading(db, event, nav, asset_store=asset_store)
     if role == "admin":
         if nav == "My Group":
             my_group_fragment(event["id"], role, actor)
@@ -5365,7 +5373,8 @@ def render_event(event: dict, role: str) -> None:
             help_fragment(event["id"], role, actor)
     with st.expander("Events & available coaches", expanded=False,
                      key=f"event_overview_{event['id']}_{role}", type="compact"):
-        render_competition_branding(db, event, asset_store=asset_store)
+        render_competition_branding(db, event, asset_store=asset_store,
+                                    show_assets=not coach_board and not scheduled_day)
         phase_fragment(event["id"], role, actor)
         available_coaches_fragment(event["id"])
 

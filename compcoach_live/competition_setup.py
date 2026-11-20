@@ -2,8 +2,7 @@
 
 This module intentionally has no dependency on :mod:`compcoach_live.app` so it
 can be imported by the Streamlit entry point without creating an import cycle.
-The two public render functions only depend on the storage API and the local
-asset adapter.
+The public render functions use the existing competition profile and image store.
 """
 
 from __future__ import annotations
@@ -152,6 +151,79 @@ def _logo_badge(digest: str, _data: bytes) -> str:
     return "data:image/png;base64," + b64encode(out.getvalue()).decode("ascii")
 
 
+def _has_map(store, competition: dict[str, Any]) -> bool:
+    # The private store already has a scoped reference in the profile. Don't
+    # fetch the full image until someone actually opens it.
+    if competition.get("strip_map_path"):
+        return True
+    return isinstance(store, LocalAssetStore) and store.has_strip_map(competition["id"])
+
+
+def _show_saved_map(store, competition: dict[str, Any], *, key: str) -> None:
+    try:
+        asset = _load_asset(store, competition, "strip_map")
+    except (ValueError, OSError):
+        st.warning("The strip map could not be opened. Close and reopen it to try again.")
+        return
+    if asset is None:
+        st.warning("The saved strip map could not be found.")
+        return
+    _show_original(asset, key=key)
+
+
+def _toggle_board_map(state_key: str) -> None:
+    st.session_state[state_key] = not st.session_state.get(state_key, False)
+
+
+@st.fragment
+def render_board_heading(db: Any, meet: dict[str, Any], view: str, *,
+                         asset_store: LocalAssetStore | SupabaseAssetStore) -> None:
+    """One compact staff-only row; opening a map reruns just this fragment."""
+    title = {"My Group": "My group", "Live": "Team situation"}[view]
+    cid = _competition_id(meet)
+    try:
+        profile = db.get_competition(cid) if cid else None
+    except (CompCoachError, ValueError):
+        profile = None
+    if not profile:
+        st.markdown(f"### {title}")
+        return
+
+    try:
+        logo = _load_asset(asset_store, profile, "logo")
+        badge = _logo_badge(logo.image.sha256, logo.image.data) if logo else ""
+    except (ValueError, OSError):
+        badge = ""  # A missing or damaged logo must not hide the map or athletes.
+    try:
+        has_map = _has_map(asset_store, profile)
+    except (ValueError, OSError):
+        has_map = False
+    if not badge and not has_map:
+        st.markdown(f"### {title}")
+        return
+
+    # A coach can have multiple competitions open; never reuse another
+    # competition/day/view's open state. This flag is not a widget key.
+    scope = f"{cid}_{meet['id']}_{'group' if view == 'My Group' else 'team'}"
+    state_key = f"staff_map_visible_{scope}"
+    opened = has_map and st.session_state.get(state_key, False)
+    with st.container(horizontal=True, horizontal_alignment="distribute",
+                      vertical_alignment="center", gap="xsmall"):
+        img = (f'<img alt="Competition logo" src="{badge}" width="36" height="36" '
+               'style="object-fit:contain;flex:none">' if badge else "")
+        # Title is a fixed label; badge is a locally generated PNG data URI.
+        st.html('<div class="cc-board-heading" style="display:flex;align-items:center;gap:.4rem">'
+                f'{img}<h3 style="margin:0;padding:0;line-height:1.2">{title}</h3></div>',
+                width="content")
+        if has_map:
+            st.button("Close map" if opened else "Strip map",
+                      icon=":material/close:" if opened else ":material/map:",
+                      key=f"staff_map_button_{scope}", width="content",
+                      on_click=_toggle_board_map, args=(state_key,))
+    if opened:
+        _show_saved_map(asset_store, profile, key=f"staff_map_original_{scope}")
+
+
 def render_competition_profile(
     db: Any,
     meet: dict[str, Any],
@@ -270,6 +342,7 @@ def render_competition_branding(
     *,
     asset_root: str | Path | None = None,
     asset_store: LocalAssetStore | SupabaseAssetStore | None = None,
+    show_assets: bool = True,
 ) -> None:
     """Render compact competition branding plus an optional strip-map viewer."""
 
@@ -280,7 +353,7 @@ def render_competition_branding(
     try:
         competition = _require_competition(db, competition_id)
         store = asset_store or LocalAssetStore(asset_root or DEFAULT_ASSET_ROOT)
-        logo = _load_asset(store, competition, "logo")
+        logo = _load_asset(store, competition, "logo") if show_assets else None
     except (CompCoachError, AssetStoreError, ValueError) as exc:
         st.warning(f"Competition details are temporarily unavailable: {exc}")
         return
@@ -311,27 +384,18 @@ def render_competition_branding(
         if detail_line:
             st.caption(detail_line)
 
-    has_map = bool(competition.get("strip_map_path"))
-    # Older local installations may have an image without a stored reference.
-    legacy_map = None
-    if not has_map and isinstance(store, LocalAssetStore):
-        try:
-            legacy_map = _load_asset(store, competition, "strip_map")
-        except (AssetStoreError, ValueError) as exc:
-            st.warning(f"The strip map could not be opened: {exc}")
-    if has_map or legacy_map is not None:
+    if not show_assets:
+        return
+    try:
+        has_map = _has_map(store, competition)
+    except (ValueError, OSError) as exc:
+        st.warning(f"The strip map could not be opened: {exc}")
+        return
+    if has_map:
         panel = st.expander("🗺️ View strip map", key=f"view_map_{competition_id}", on_change="rerun")
         if panel.open:
             with panel:
-                try:
-                    strip_map = legacy_map or _load_asset(store, competition, "strip_map")
-                except (AssetStoreError, ValueError) as exc:
-                    st.warning(f"The strip map could not be opened: {exc}")
-                else:
-                    if strip_map is not None:
-                        _show_original(strip_map, key=f"map_original_{competition_id}")
-                    else:
-                        st.warning("The saved strip map could not be found.")
+                _show_saved_map(store, competition, key=f"map_original_{competition_id}")
 
 
 def _render_asset_editor(
