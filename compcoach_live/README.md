@@ -367,8 +367,9 @@ the multi-phone checks in the deployment guide.
 - Athlete-specific coach exceptions take precedence over pod defaults on later
   imports.
 - Activity history and guarded Undo.
-- Mobile **Team situation** board and a WhatsApp schedule covering selected or all events, with blue
-  Main and orange Side markers and distinct coach-name emphasis.
+- In a WhatsApp schedule with several events, each coach has one list. A short event title separates
+  their assignments; pool rows use 🔹 for Main and 🔸 for Side. DE rows show the pod and any other
+  assigned coaches as equals. A single-event DE schedule retains its pod-by-pod overview.
 - Safe-area-aware top spacing so the competition title remains visible on
   desktop and mobile browsers.
 - Full Coach and Coordinator share links detected automatically from the

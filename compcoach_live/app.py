@@ -73,6 +73,7 @@ try:
         remember_staff_access, restore_remembered_access, clear_remembered_access,
     )
     from compcoach_live.whatsapp_scope import resolve_share_events, render_share_event_scope
+    from compcoach_live.whatsapp_schedule import EventPlan, PodAthlete, schedule_lines
     from compcoach_live.de_corrections_ui import render_de_result_corrections
     from compcoach_live.schedule_setup import render_competition_schedule
     from compcoach_live.training import get_training, join_training, list_training_sessions, tick_training
@@ -129,6 +130,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
         remember_staff_access, restore_remembered_access, clear_remembered_access,
     )
     from whatsapp_scope import resolve_share_events, render_share_event_scope
+    from whatsapp_schedule import EventPlan, PodAthlete, schedule_lines
     from de_corrections_ui import render_de_result_corrections
     from schedule_setup import render_competition_schedule
     from training import get_training, join_training, list_training_sessions, tick_training
@@ -144,7 +146,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.6"
+APP_VERSION = "0.11.7"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -4397,130 +4399,53 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
             "No Admin supervision needed. You can practice again after finishing.",
             f"Practice access ends: {practice.get('expires_at', '')}", "", coach_link,
         ]).strip()
-    children = resolve_share_events(db.list_meet_events(event["id"]), event_ids)
+    all_events = db.list_meet_events(event["id"])
+    children = resolve_share_events(all_events, event_ids)
     if not children:
         return ""
-    main_marker, side_marker = "🔹", "🟢◇"
+    # Use the same Event N as the selector for duplicate names, even in a subset.
+    raw_titles = [str(child["name"]).upper() for child in all_events]
+    titles = {
+        child["id"]: title if raw_titles.count(title) == 1 else f"{title} · Event {i}"
+        for i, (child, title) in enumerate(zip(all_events, raw_titles), 1)
+    }
+    plans = []
+    for child in children:
+        athletes = operational_view_athletes(db.list_athletes(child["id"]))
+        pools = sorted(
+            (row for row in athletes if row["phase"] == "pools"),
+            key=lambda r: tuple(natural_sort_key(v) for v in (
+                r["time_text"] or "ZZZ", r["pod"], r["source_strip"], r["name"],
+            )),
+        )
+        de = sorted(
+            (row for row in athletes if row["phase"] == "de"),
+            key=lambda r: tuple(natural_sort_key(v) for v in (
+                athlete_sector(r), r["source_strip"], r["name"],
+            )),
+        )
+        pods: dict[str, list[PodAthlete]] = {}
+        for row in de:
+            progress = (
+                " · " + de_progress_text(row, child)
+                if row.get("de_wins") or row.get("de_byes") or child.get("de_start_tableau") else ""
+            )
+            pods.setdefault(athlete_sector(row), []).append(
+                PodAthlete(row["name"], tuple(assigned_coach_names(row)), progress)
+            )
+        pairings = []
+        if de:
+            for bout in list_de_bouts(db, child["id"]):
+                if bout["status"] == "pending":
+                    note = f" · {bout['round_label']}" if bout["round_label"] else ""
+                    pairings.append(f"⚔ AFM vs AFM: {bout['athlete_a']['name']} vs {bout['athlete_b']['name']}{note}")
+        plans.append(EventPlan(titles[child["id"]], pools, pods, pairings))
     parent = db.get_competition(str(event.get("competition_id") or "")) or {}
     timestamp = datetime.now(ZoneInfo(event["timezone"])).strftime("%I:%M %p").lstrip("0")
     lines = [
         f"🏆 *{str(parent.get('name') or event['name']).upper()}*",
-        f"Updated {timestamp}",
-        "",
+        f"Updated {timestamp}", "", *schedule_lines(plans, event["active_coaches"]),
     ]
-    for child in children:
-        athletes = operational_view_athletes(db.list_athletes(child["id"]))
-        lines.extend([f"📍 *{child['name'].upper()}*", ""])
-        if not athletes:
-            lines.extend(["No active athletes yet.", ""])
-            continue
-        for phase, title in (("pools", "POOLS"), ("de", "DIRECT ELIMINATION")):
-            phase_rows = [a for a in athletes if a["phase"] == phase]
-            if not phase_rows:
-                continue
-            lines.extend([f"*{title}*", ""])
-            if phase == "pools":
-                lines.extend([f"{main_marker} *Main coach* · {side_marker} Side coach", ""])
-                phase_rows.sort(
-                    key=lambda a: (
-                        natural_sort_key(a["time_text"] or "ZZZ"),
-                        natural_sort_key(a["pod"]),
-                        natural_sort_key(a["source_strip"]),
-                        natural_sort_key(a["name"]),
-                    )
-                )
-            else:
-                phase_rows.sort(
-                    key=lambda a: (
-                        natural_sort_key(a["pod"] or "ZZZ"),
-                        natural_sort_key(a["source_strip"]),
-                        natural_sort_key(a["name"]),
-                    )
-                )
-            if phase == "de":
-                pods = sorted({athlete_sector(row) for row in phase_rows}, key=natural_sort_key)
-                for pod in pods:
-                    pod_rows = [row for row in phase_rows if athlete_sector(row) == pod]
-                    coaches = sorted({name for row in pod_rows for name in assigned_coach_names(row)})
-                    lines.append(f"◆ *POD {pod}*")
-                    lines.append("Coaches: " + (" / ".join(coaches) or "Unassigned"))
-                    mixed = len({frozenset(assigned_coach_names(row)) for row in pod_rows}) > 1
-                    for row in pod_rows:
-                        note = " · Coaches: " + " / ".join(assigned_coach_names(row)) if mixed else ""
-                        progress = " · " + de_progress_text(row, child) if row.get("de_wins") or row.get("de_byes") or child.get("de_start_tableau") else ""
-                        lines.append(f"• {row['name']}{note}{progress}")
-                    lines.append("")
-                for bout in list_de_bouts(db, child["id"]):
-                    if bout["status"] == "pending":
-                        round_note = f" · {bout['round_label']}" if bout["round_label"] else ""
-                        lines.append(f"⚔ AFM vs AFM: {bout['athlete_a']['name']} vs {bout['athlete_b']['name']}{round_note}")
-                lines.append("")
-            for coach in dict.fromkeys(event["active_coaches"]) if phase == "pools" else ():
-                main_rows = [row for row in phase_rows if row["main_coach"] == coach]
-                side_rows = [
-                    row
-                    for row in phase_rows
-                    if row["side_coach"] == coach and row["main_coach"] != coach
-                ]
-                if not (main_rows or side_rows):
-                    continue
-                heading = f"*{coach.upper()}*" if main_rows else coach.upper()
-                lines.append(f"🤺 {heading}")
-                for side_block, rows in ((False, main_rows), (True, side_rows)):
-                    for row in rows:
-                        where = row["source_strip"] or (
-                            f"Pod {row['pod']}" if row["pod"] else "TBD"
-                        )
-                        detail = (
-                            f"Pool {row['pool_no']}"
-                            if phase == "pools" and row["pool_no"]
-                            else f"Pod {row['pod']}"
-                            if row["pod"]
-                            else ""
-                        )
-                        if side_block:
-                            diamond = side_marker
-                            main_short = (
-                                row["main_coach"][:3].upper() if row["main_coach"] else ""
-                            )
-                            role_note = f" [M: *{main_short}*]" if main_short else ""
-                        else:
-                            diamond = main_marker
-                            side_short = (
-                                row["side_coach"][:3].upper()
-                                if row["side_coach"] and row["side_coach"] != coach else ""
-                            )
-                            role_note = f" [S: {side_short}]" if side_short else ""
-                        time_note = (
-                            f"{row['time_text']} · "
-                            if phase == "pools" and row["time_text"]
-                            else ""
-                        )
-                        lines.append(
-                            f"{diamond} {time_note}{where}: {row['name']}{role_note}"
-                            + (f" · {detail}" if detail and detail not in where else "")
-                        )
-                lines.append("")
-            active_coaches = set(event["active_coaches"])
-            unassigned = [
-                athlete
-                for athlete in phase_rows
-                if not assigned_coach_names(athlete)
-                or bool(set(assigned_coach_names(athlete)) - active_coaches)
-            ]
-            if unassigned:
-                lines.append("⚠️ *NEEDS COACH / REASSIGNMENT*")
-                for row in unassigned:
-                    where = row["source_strip"] or (
-                        f"Pod {row['pod']}" if row["pod"] else "TBD"
-                    )
-                    time_note = (
-                        f"{row['time_text']} · "
-                        if phase == "pools" and row["time_text"]
-                        else ""
-                    )
-                    lines.append(f"• {time_note}{where} · {row['name']}")
-                lines.append("")
     if coach_link.startswith("http"):
         lines.extend(["Team situation:", coach_link])
     return "\n".join(lines).strip()

@@ -137,16 +137,21 @@ def test_team_plan_and_whatsapp_show_all_peers_and_keep_pool_main_side_style(dat
     assert "Main:" not in sector_markup and "Side:" not in sector_markup
 
     nav_named(app, "admin_nav_").set_value("Share").run()
-    message = "\n".join(code.value for code in app.code)
-    de_message = message.split("*DIRECT ELIMINATION*", 1)[1].split("📍 *CADET EPEE*", 1)[0]
-    assert "◆ *POD P*" in de_message
-    assert all(coach in de_message for coach in coaches)
-    assert "Main" not in de_message and "Side" not in de_message
-    assert not any(f"*{coach.upper()}*" in de_message for coach in coaches)
+    message = next(code.value for code in app.code if code.value.startswith("🏆"))
+    for coach in coaches:
+        heading = f"🤺 *{coach.upper()}*" if coach == "Carmine" else f"🤺 {coach.upper()}"
+        assert message.splitlines().count(heading) == 1
+        peers = " / ".join(c for c in coaches if c != coach)
+        assert f"{heading}\n_JUNIOR EPEE · DE_\n◆ Pod P: {athlete['name']} · also assigned: {peers}" in message
     assert "🤺 *CARMINE*" in message
     assert "🤺 SAM" in message
     assert "🔹 B2: POOL Example [S: SAM]" in message
-    assert "🟢◇ B2: POOL Example [M: *CAR*]" in message
+    assert "🔸 B2: POOL Example [M: *CAR*]" in message
+    next(widget for widget in app.radio if widget.label == "Events to include").set_value("Choose events").run()
+    next(widget for widget in app.multiselect if widget.label == "Include these events").set_value([de["id"]]).run()
+    de_message = next(code.value for code in app.code if code.value.startswith("🏆"))
+    assert f"◆ *POD P*\nCoaches: {' / '.join(sorted(coaches))}\n• {athlete['name']}" in de_message
+    assert "🤺" not in de_message and "Main" not in de_message and "Side" not in de_message
     assert not app.exception
 
 

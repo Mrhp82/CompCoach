@@ -1,5 +1,6 @@
 import io
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import streamlit as st
@@ -489,10 +490,10 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     database = CompCoachDB(path)
     meet, events = create_multi_event(
         database,
-        ["Y12 Women's Foil", "Y14 Men's Epee"],
+        ["Y12 Women's Foil", "Y14 Men's Epee", "Evening Sabre"],
         coaches=("Igor", "Carmine"),
     )
-    foil, epee = events
+    foil, epee, sabre = events
     database.merge_import(
         foil["id"],
         parse_pasted_table(
@@ -521,6 +522,11 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     database.assign_athletes(
         epee["id"], [max_row["id"]], main_coach="Carmine", actor="Carmine"
     )
+    database.merge_import(sabre["id"], parse_pasted_table(
+        "Name\tStrip #\tPool #\nEXAMPLE Riley\tH2\t5"
+    ).records, "Carmine")
+    riley = database.list_athletes(sabre["id"])[0]
+    database.assign_athletes(sabre["id"], [riley["id"]], main_coach="Igor", side_coach="Carmine", actor="Carmine")
 
     app = open_board(meet["id"], meet["admin_token"], "Carmine")
     nav_named(app, "admin_nav_").set_value("Share").run()
@@ -532,17 +538,26 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     assert coach_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert coordinator_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert foil["id"] not in coach_link and epee["id"] not in coach_link
-    assert "🔹 *Main coach* · 🟢◇ Side coach" in message
-    assert "📍 *Y12 WOMEN'S FOIL*" in message
-    assert "📍 *Y14 MEN'S EPEE*" in message
+    assert message.count("🔹 *Main coach* · 🔸 Side coach") == 1
     assert "🤺 *IGOR*" in message
     assert "🔹 8:00 AM · B1: HSU Audrey [S: CAR]" in message
     assert [line for line in message.splitlines() if line in {"🤺 CARMINE", "🤺 *CARMINE*"}] == ["🤺 *CARMINE*"]
-    assert ("🤺 *CARMINE*\n🔹 8:00 AM · B10: EXAMPLE Casey · Pool 3\n"
-            "🟢◇ 8:00 AM · B1: HSU Audrey [M: *IGO*] · Pool 2") in message
-    assert "◆ *POD M*" in message
-    assert "Coaches: Carmine\n• DING Max" in message
+    assert ("🤺 *CARMINE*\n_Y12 WOMEN'S FOIL · Pools_\n🔹 8:00 AM · B10: EXAMPLE Casey · Pool 3\n"
+            "🔸 8:00 AM · B1: HSU Audrey [M: *IGO*] · Pool 2\n_Y14 MEN'S EPEE · DE_\n◆ Pod M: DING Max\n"
+            "_EVENING SABRE · Pools_\n🔸 H2: EXAMPLE Riley [M: *IGO*] · Pool 5") in message
     assert message.endswith(coach_link)
+    wa = next(button for button in app.get("link_button") if button.proto.label == "Open in WhatsApp")
+    assert parse_qs(urlsplit(wa.proto.url).query)["text"] == [message]
+    next(widget for widget in app.radio if widget.label == "Events to include").set_value("Choose events").run()
+    next(widget for widget in app.multiselect if widget.label == "Include these events").set_value(
+        [sabre["id"], foil["id"]]
+    ).run()
+    chosen = next(code.value for code in app.code if code.value.startswith("🏆"))
+    assert chosen.count("🤺 *CARMINE*") == 1
+    assert ("🤺 *CARMINE*\n_Y12 WOMEN'S FOIL_\n🔹 8:00 AM · B10: EXAMPLE Casey · Pool 3\n"
+            "🔸 8:00 AM · B1: HSU Audrey [M: *IGO*] · Pool 2\n_EVENING SABRE_\n"
+            "🔸 H2: EXAMPLE Riley [M: *IGO*] · Pool 5") in chosen
+    assert "DING Max" not in chosen and "Y14 MEN'S EPEE" not in chosen
     assert not app.exception
 
 
