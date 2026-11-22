@@ -201,27 +201,6 @@ def _toggle_board_map(state_key: str) -> None:
 
 
 @st.fragment
-def render_assignment_map(db: Any, meet: dict[str, Any], *,
-                          asset_store: LocalAssetStore | SupabaseAssetStore) -> None:
-    """Show the venue map above the assignment controls for this competition day."""
-    cid = _competition_id(meet)
-    if not cid:
-        return
-    try:
-        profile = db.get_competition(cid)
-        if not profile or not _has_map(asset_store, profile):
-            return
-    except (CompCoachError, ValueError, OSError):
-        st.caption("Venue map temporarily unavailable.")
-        return
-    key = f"assignment_venue_map_{cid}_{meet['id']}"
-    panel = st.expander("Venue map", expanded=True, key=key, on_change="rerun")
-    if panel.open:
-        with panel:
-            _show_saved_map(asset_store, profile, key=f"{key}_original")
-
-
-@st.fragment
 def render_board_heading(db: Any, meet: dict[str, Any], view: str, *,
                          asset_store: LocalAssetStore | SupabaseAssetStore) -> None:
     """One compact staff-only row; opening a map reruns just this fragment."""

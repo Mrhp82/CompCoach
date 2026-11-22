@@ -46,7 +46,7 @@ try:
     )
     from compcoach_live.de_bouts import list_de_bouts
     from compcoach_live.competition_setup import (
-        render_assignment_map,
+        _competition_id, _has_map, _show_saved_map,
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
@@ -102,7 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
     from de_bouts import list_de_bouts
     from competition_setup import (
-        render_assignment_map,
+        _competition_id, _has_map, _show_saved_map,
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
@@ -144,7 +144,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.4"
+APP_VERSION = "0.11.5"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -2166,6 +2166,26 @@ def render_de_start_tableau(event: dict, actor: str) -> None:
                 on_click=save_de_start_tableau_snapshot,
                 args=(event["id"], actor, version, size_key),
             )
+
+
+@st.fragment
+def render_assignment_map(db, meet: dict, *, asset_store) -> None:
+    """Show the venue map above the assignment controls for this competition day."""
+    cid = _competition_id(meet)
+    if not cid:
+        return
+    try:
+        profile = db.get_competition(cid)
+        if not profile or not _has_map(asset_store, profile):
+            return
+    except (CompCoachError, ValueError, OSError):
+        st.caption("Venue map temporarily unavailable.")
+        return
+    key = f"assignment_venue_map_{cid}_{meet['id']}"
+    panel = st.expander("Venue map", expanded=True, key=key, on_change="rerun")
+    if panel.open:
+        with panel:
+            _show_saved_map(asset_store, profile, key=f"{key}_original")
 
 
 def render_assignments(event: dict, actor: str) -> None:
