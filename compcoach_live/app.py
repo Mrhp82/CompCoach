@@ -46,6 +46,7 @@ try:
     )
     from compcoach_live.de_bouts import list_de_bouts
     from compcoach_live.competition_setup import (
+        render_assignment_map,
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
@@ -101,6 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
     from de_bouts import list_de_bouts
     from competition_setup import (
+        render_assignment_map,
         render_board_heading,
         render_competition_branding,
         render_competition_profile,
@@ -142,7 +144,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.3"
+APP_VERSION = "0.11.4"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -5126,6 +5128,7 @@ def render_admin_setup(event: dict, actor: str, *, scheduled_day: bool = False) 
         if setup == "Import":
             render_import(by_id[child_id], actor)
         else:
+            render_assignment_map(db, event, asset_store=asset_store)
             render_assignments(by_id[child_id], actor)
     elif setup == "Events":
         render_event_management(event)
