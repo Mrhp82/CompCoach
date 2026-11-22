@@ -496,7 +496,7 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     database.merge_import(
         foil["id"],
         parse_pasted_table(
-            "Name\tStrip #\tTime\tPool #\nHSU Audrey\tB1\t8:00 AM\t2"
+            "Name\tStrip #\tTime\tPool #\nHSU Audrey\tB1\t8:00 AM\t2\nEXAMPLE Casey\tB10\t8:00 AM\t3"
         ).records,
         "Carmine",
     )
@@ -505,7 +505,11 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
         parse_pasted_table("Name\tStrip #\nDING Max\tM1").records,
         "Carmine",
     )
-    audrey = database.list_athletes(foil["id"])[0]
+    foil_rows = {row["name"]: row for row in database.list_athletes(foil["id"])}
+    audrey = foil_rows["HSU Audrey"]
+    database.assign_athletes(
+        foil["id"], [foil_rows["EXAMPLE Casey"]["id"]], main_coach="Carmine", actor="Carmine"
+    )
     max_row = database.list_athletes(epee["id"])[0]
     database.assign_athletes(
         foil["id"],
@@ -528,13 +532,14 @@ def test_share_aggregates_all_events_into_one_message_and_common_links(
     assert coach_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert coordinator_link.startswith(f"https://compcoach.example/?event={meet['id']}")
     assert foil["id"] not in coach_link and epee["id"] not in coach_link
-    assert "🔹 *Main coach* · 🔸 Side coach" in message
+    assert "🔹 *Main coach* · 🟢◇ Side coach" in message
     assert "📍 *Y12 WOMEN'S FOIL*" in message
     assert "📍 *Y14 MEN'S EPEE*" in message
     assert "🤺 *IGOR*" in message
     assert "🔹 8:00 AM · B1: HSU Audrey [S: CAR]" in message
-    assert "🤺 CARMINE" in message
-    assert "🔸 8:00 AM · B1: HSU Audrey [M: *IGO*]" in message
+    assert [line for line in message.splitlines() if line in {"🤺 CARMINE", "🤺 *CARMINE*"}] == ["🤺 *CARMINE*"]
+    assert ("🤺 *CARMINE*\n🔹 8:00 AM · B10: EXAMPLE Casey · Pool 3\n"
+            "🟢◇ 8:00 AM · B1: HSU Audrey [M: *IGO*] · Pool 2") in message
     assert "◆ *POD M*" in message
     assert "Coaches: Carmine\n• DING Max" in message
     assert message.endswith(coach_link)

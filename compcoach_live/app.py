@@ -144,7 +144,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script fallback
     )
 
 
-APP_VERSION = "0.11.5"
+APP_VERSION = "0.11.6"
 DEFAULT_COACHES = ["Igor", "Carmine", "JM", "Vivien", "Ruperto", "Sam", "Yilu", "Daniel"]
 DEFAULT_COORDINATORS = ["Irina"]
 TIMEZONES = [
@@ -4400,6 +4400,7 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
     children = resolve_share_events(db.list_meet_events(event["id"]), event_ids)
     if not children:
         return ""
+    main_marker, side_marker = "🔹", "🟢◇"
     parent = db.get_competition(str(event.get("competition_id") or "")) or {}
     timestamp = datetime.now(ZoneInfo(event["timezone"])).strftime("%I:%M %p").lstrip("0")
     lines = [
@@ -4419,7 +4420,7 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
                 continue
             lines.extend([f"*{title}*", ""])
             if phase == "pools":
-                lines.extend(["🔹 *Main coach* · 🔸 Side coach", ""])
+                lines.extend([f"{main_marker} *Main coach* · {side_marker} Side coach", ""])
                 phase_rows.sort(
                     key=lambda a: (
                         natural_sort_key(a["time_text"] or "ZZZ"),
@@ -4454,18 +4455,18 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
                         round_note = f" · {bout['round_label']}" if bout["round_label"] else ""
                         lines.append(f"⚔ AFM vs AFM: {bout['athlete_a']['name']} vs {bout['athlete_b']['name']}{round_note}")
                 lines.append("")
-            for coach in event["active_coaches"] if phase == "pools" else []:
+            for coach in dict.fromkeys(event["active_coaches"]) if phase == "pools" else ():
                 main_rows = [row for row in phase_rows if row["main_coach"] == coach]
                 side_rows = [
                     row
                     for row in phase_rows
                     if row["side_coach"] == coach and row["main_coach"] != coach
                 ]
+                if not (main_rows or side_rows):
+                    continue
+                heading = f"*{coach.upper()}*" if main_rows else coach.upper()
+                lines.append(f"🤺 {heading}")
                 for side_block, rows in ((False, main_rows), (True, side_rows)):
-                    if not rows:
-                        continue
-                    heading = coach.upper() if side_block else f"*{coach.upper()}*"
-                    lines.append(f"🤺 {heading}")
                     for row in rows:
                         where = row["source_strip"] or (
                             f"Pod {row['pod']}" if row["pod"] else "TBD"
@@ -4478,15 +4479,16 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
                             else ""
                         )
                         if side_block:
-                            diamond = "🔸"
+                            diamond = side_marker
                             main_short = (
                                 row["main_coach"][:3].upper() if row["main_coach"] else ""
                             )
                             role_note = f" [M: *{main_short}*]" if main_short else ""
                         else:
-                            diamond = "🔹"
+                            diamond = main_marker
                             side_short = (
-                                row["side_coach"][:3].upper() if row["side_coach"] else ""
+                                row["side_coach"][:3].upper()
+                                if row["side_coach"] and row["side_coach"] != coach else ""
                             )
                             role_note = f" [S: {side_short}]" if side_short else ""
                         time_note = (
@@ -4498,7 +4500,7 @@ def generate_whatsapp(event: dict, coach_link: str, event_ids: list[str] | None 
                             f"{diamond} {time_note}{where}: {row['name']}{role_note}"
                             + (f" · {detail}" if detail and detail not in where else "")
                         )
-                    lines.append("")
+                lines.append("")
             active_coaches = set(event["active_coaches"])
             unassigned = [
                 athlete

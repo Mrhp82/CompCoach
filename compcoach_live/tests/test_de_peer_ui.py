@@ -146,7 +146,7 @@ def test_team_plan_and_whatsapp_show_all_peers_and_keep_pool_main_side_style(dat
     assert "🤺 *CARMINE*" in message
     assert "🤺 SAM" in message
     assert "🔹 B2: POOL Example [S: SAM]" in message
-    assert "🔸 B2: POOL Example [M: *CAR*]" in message
+    assert "🟢◇ B2: POOL Example [M: *CAR*]" in message
     assert not app.exception
 
 
